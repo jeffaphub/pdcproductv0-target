@@ -8,30 +8,48 @@ type Tab = {
   label: string
 }
 
-const tabs: Tab[] = [
-  { id: "standard-cost", label: "Standard Cost Governance" },
-  { id: "quotes-review", label: "Quotes for Review" },
-  { id: "quote-tracker", label: "Quote Tracker" },
-  { id: "quotes-investigate", label: "Quotes to Investigate" },
-  { id: "quote-hub", label: "Quote Data Hub" },
-  { id: "product-cost-analysis", label: "Product Cost Analysis" },
-  { id: "pricing", label: "Pricing & Qty Optimization" },
-  { id: "cost-fidelity", label: "Cost Fidelity & Alerts" },
-  { id: "labor", label: "Labor Cost Tracking" },
-  { id: "unit-cost", label: "Unit Cost & COPQ" },
-  { id: "schedule-risk", label: "Schedule & Material Risk" },
-  { id: "line-of-balance", label: "Line of Balance" },
-  { id: "build-plan", label: "Build Plan" },
-  { id: "supplier-otd", label: "Supplier OTD" },
-  { id: "supply-risk", label: "Supply Risk & Material Availability" },
-  { id: "fpy", label: "FPY" },
-  { id: "critical-path", label: "Critical Path" },
-  { id: "long-lead-shortage", label: "Long-Lead & Shortage Risk" },
-  { id: "material-monitoring", label: "Material Monitoring" },
-  { id: "schedule-risk-registry", label: "Schedule Risk Registry" },
-  { id: "risk-mitigation", label: "Risk Mitigation" },
-  { id: "ready-to-work", label: "Ready to Work / Release" },
-  { id: "siop", label: "SIOP" },
+type SidebarSection = {
+  title: string
+  tabs: Tab[]
+}
+
+const sections: SidebarSection[] = [
+  {
+    title: "Unit Cost Intelligence",
+    tabs: [
+      { id: "standard-cost", label: "Standard Cost Governance" },
+      { id: "quotes-review", label: "Quotes for Review" },
+      { id: "quote-tracker", label: "Quote Tracker" },
+      { id: "quotes-investigate", label: "Quotes to Investigate" },
+      { id: "quote-hub", label: "Quote Data Hub" },
+      { id: "product-cost-analysis", label: "Product Cost Analysis" },
+      { id: "pricing", label: "Pricing & Qty Optimization" },
+      { id: "cost-fidelity", label: "Cost Fidelity & Alerts" },
+      { id: "labor", label: "Labor Cost Tracking" },
+      { id: "unit-cost", label: "Unit Cost & COPQ" },
+      { id: "schedule-risk", label: "Schedule & Material Risk" },
+      { id: "line-of-balance", label: "Line of Balance" },
+      { id: "build-plan", label: "Build Plan" },
+      { id: "supplier-otd", label: "Supplier OTD" },
+      { id: "supply-risk", label: "Supply Risk & Material Availability" },
+      { id: "fpy", label: "FPY" },
+      { id: "critical-path", label: "Critical Path" },
+      { id: "long-lead-shortage", label: "Long-Lead & Shortage Risk" },
+      { id: "material-monitoring", label: "Material Monitoring" },
+      { id: "schedule-risk-registry", label: "Schedule Risk Registry" },
+      { id: "risk-mitigation", label: "Risk Mitigation" },
+      { id: "ready-to-work", label: "Ready to Work / Release" },
+      { id: "siop", label: "SIOP" },
+    ],
+  },
+  {
+    title: "Operations / Unit Cost",
+    tabs: [
+      { id: "ops-unit-cost", label: "Product Unit Cost" },
+      { id: "ops-shop-floor", label: "Shop Floor Operations" },
+      { id: "ops-enterprise-intel", label: "Enterprise Intelligence" },
+    ],
+  },
 ]
 
 type SidebarProps = {

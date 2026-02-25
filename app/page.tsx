@@ -26,6 +26,9 @@ import { ScheduleRiskRegistry } from "@/components/tabs/schedule-risk-registry"
 import { RiskMitigation } from "@/components/tabs/risk-mitigation"
 import { ReadyToWork } from "@/components/tabs/ready-to-work"
 import { SIOPDashboard } from "@/components/tabs/siop"
+import { OpsUnitCost } from "@/components/tabs/ops-unit-cost"
+import { OpsShopFloor } from "@/components/tabs/ops-shop-floor"
+import { OpsEnterpriseIntel } from "@/components/tabs/ops-enterprise-intel"
 
 export type TabId =
   | "standard-cost"
@@ -51,6 +54,9 @@ export type TabId =
   | "risk-mitigation"
   | "ready-to-work"
   | "siop"
+  | "ops-unit-cost"
+  | "ops-shop-floor"
+  | "ops-enterprise-intel"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -96,6 +102,9 @@ export default function Home() {
           {activeTab === "risk-mitigation" && <RiskMitigation />}
           {activeTab === "ready-to-work" && <ReadyToWork />}
           {activeTab === "siop" && <SIOPDashboard />}
+          {activeTab === "ops-unit-cost" && <OpsUnitCost />}
+          {activeTab === "ops-shop-floor" && <OpsShopFloor />}
+          {activeTab === "ops-enterprise-intel" && <OpsEnterpriseIntel />}
         </main>
       </div>
     </div>
