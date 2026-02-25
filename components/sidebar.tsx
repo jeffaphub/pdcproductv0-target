@@ -64,22 +64,27 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
         <h1 className="text-lg font-bold text-[#1D4ED8]">Unit Cost Intelligence – Handheld Radios</h1>
         <p className="text-xs text-gray-500 mt-1">Aerospace & Defense Manufacturing - Dummy Data</p>
       </div>
-      <nav className="flex-1 p-4">
-        <ul className="space-y-1">
-          {tabs.map((tab) => (
-            <li key={tab.id}>
-              <button
-                onClick={() => onTabChange(tab.id)}
-                className={cn(
-                  "w-full text-left px-4 py-3 rounded-lg transition-colors text-sm font-medium",
-                  activeTab === tab.id ? "bg-[#1D4ED8] text-white" : "text-gray-700 hover:bg-gray-100",
-                )}
-              >
-                {tab.label}
-              </button>
-            </li>
-          ))}
-        </ul>
+      <nav className="flex-1 p-4 overflow-y-auto">
+        {sections.map((section, idx) => (
+          <div key={section.title} className={idx > 0 ? "mt-4 pt-4 border-t border-gray-200" : ""}>
+            <p className="px-3 mb-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-400">{section.title}</p>
+            <ul className="space-y-0.5">
+              {section.tabs.map((tab) => (
+                <li key={tab.id}>
+                  <button
+                    onClick={() => onTabChange(tab.id)}
+                    className={cn(
+                      "w-full text-left px-4 py-2 rounded-lg transition-colors text-xs font-medium",
+                      activeTab === tab.id ? "bg-[#1D4ED8] text-white" : "text-gray-700 hover:bg-gray-100",
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </nav>
     </aside>
   )
