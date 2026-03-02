@@ -256,22 +256,6 @@ export function OTDTracking() {
     const outsideHorizonPast = withValidDueDate.filter(d => d.daysToDue! < -pmHorizon).length
     const outsideHorizonFuture = withValidDueDate.filter(d => d.daysToDue! > pmHorizon).length
     
-    // Debug log
-    console.log("[v0] PM Data Sanity:", {
-      totalInDataset,
-      deliveriesAfterPmFilter,
-      withValidDueDateCount: withValidDueDate.length,
-      upcomingDueInHorizon,
-      backlogInWindow,
-      allBacklog,
-      lateCount,
-      minDaysToDue,
-      maxDaysToDue,
-      outsideHorizonPast,
-      outsideHorizonFuture,
-      horizon: pmHorizon
-    })
-    
     return { 
       totalInDataset,
       totalForProgram, 

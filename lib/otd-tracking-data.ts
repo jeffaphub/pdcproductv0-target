@@ -164,10 +164,14 @@ function deriveSeverity(daysLate: number, contractDateDelta: number): SeverityLe
 
 export function generateOTDDeliveries(count: number = 150): OTDDelivery[] {
   const deliveries: OTDDelivery[] = []
-  const baseDate = new Date(2024, 0, 1)
+  // Use current date as base so data is relevant
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const baseDate = today
 
   for (let i = 0; i < count; i++) {
-    const contractDate = addDays(baseDate, randomInt(-60, 120))
+    // Contract dates spread from -30 days (past due) to +90 days (upcoming)
+    const contractDate = addDays(baseDate, randomInt(-30, 90))
     const promiseDate = addDays(contractDate, randomInt(-10, 15))
     const expectedDate = addDays(promiseDate, randomInt(-5, 20))
     const isComplete = Math.random() > 0.4
