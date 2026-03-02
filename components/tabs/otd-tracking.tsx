@@ -367,6 +367,23 @@ export function OTDTracking() {
   
   const pmLateDeliveries = useMemo(() => pmAtRiskDeliveries.filter(d => d.isLate), [pmAtRiskDeliveries])
   const pmAtRiskOnlyDeliveries = useMemo(() => pmAtRiskDeliveries.filter(d => d.isAtRisk && !d.isLate), [pmAtRiskDeliveries])
+  
+  // Total late count includes items outside the horizon filter (for accurate KPI display)
+  const pmTotalLateCount = useMemo(() => {
+    return pmEnrichedDeliveries.filter(d => {
+      if (!d.isLate) return false
+      // Apply same program/manager filter
+      const hasExplicitProgramSelection = pmSelectedProgram || pmSelectedPrograms.length > 0
+      if (hasExplicitProgramSelection) {
+        if (pmSelectedProgram && d.program !== pmSelectedProgram) return false
+        if (pmSelectedPrograms.length > 0 && !pmSelectedPrograms.includes(d.program)) return false
+      } else if (pmSelectedManager !== "all") {
+        const pmPrograms = programManagerMapping[pmSelectedManager] || []
+        if (!pmPrograms.includes(d.program)) return false
+      }
+      return true
+    }).length
+  }, [pmEnrichedDeliveries, pmSelectedManager, pmSelectedProgram, pmSelectedPrograms, programManagerMapping])
 
   // PM: Programs available based on selected manager
   const pmAvailablePrograms = useMemo(() => {
@@ -374,9 +391,10 @@ export function OTDTracking() {
     return programManagerMapping[pmSelectedManager] || []
   }, [pmSelectedManager, programs, programManagerMapping])
 
-  // PM: Portfolio table data (programs with aggregated metrics)
+  // PM: Portfolio table data - includes BOTH upcoming at-risk AND late items
+  // Late items should always show regardless of mode (they're past due)
   const pmPortfolioTableData = useMemo(() => {
-    const programMap = new Map<string, { 
+    const programMap = new Map<string, {
       dueCount: number
       atRiskCount: number
       lateCount: number
@@ -387,25 +405,58 @@ export function OTDTracking() {
       ownerCounts: Record<string, number>
     }>()
     
-    pmFilteredDeliveries.forEach(d => {
-      const existing = programMap.get(d.program) || { 
+    // Helper to get or create program entry
+    const getOrCreate = (program: string) => {
+      return programMap.get(program) || {
         dueCount: 0,
-        atRiskCount: 0, 
+        atRiskCount: 0,
         lateCount: 0,
-        nearestDue: 999, 
+        nearestDue: 999,
         dominantDriver: "Supply" as DriverCategory,
         dominantOwner: "Production Planner",
         driverCounts: { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 },
         ownerCounts: { "Supply Chain/Buyer": 0, "Quality/MRB": 0, "Factory/Operations": 0, "Production Planner": 0 }
       }
+    }
+    
+    // Include filtered deliveries for "due" and "at-risk" counts
+    pmFilteredDeliveries.forEach(d => {
+      const existing = getOrCreate(d.program)
       existing.dueCount++
-      // Use computed isLate/isAtRisk flags instead of otdStatus
+      // Use computed isLate/isAtRisk flags - but in upcoming mode, late won't be in pmFilteredDeliveries
       if (d.isLate) existing.lateCount++
       else if (d.isAtRisk) existing.atRiskCount++
       existing.driverCounts[d.driver]++
       existing.ownerCounts[d.escalationOwner]++
       const daysToDue = d.daysToDue ?? 999
       if (daysToDue < existing.nearestDue) existing.nearestDue = daysToDue
+      programMap.set(d.program, existing)
+    })
+    
+    // ALSO include late items from enriched deliveries (they may be outside the horizon filter)
+    // This ensures late count is accurate in the Portfolio even in "upcoming" mode
+    pmEnrichedDeliveries.forEach(d => {
+      if (!d.isLate) return // Only add late items
+      // Apply same program/manager filter as pmFilteredDeliveries
+      const hasExplicitProgramSelection = pmSelectedProgram || pmSelectedPrograms.length > 0
+      if (hasExplicitProgramSelection) {
+        if (pmSelectedProgram && d.program !== pmSelectedProgram) return
+        if (pmSelectedPrograms.length > 0 && !pmSelectedPrograms.includes(d.program)) return
+      } else if (pmSelectedManager !== "all") {
+        const pmPrograms = programManagerMapping[pmSelectedManager] || []
+        if (!pmPrograms.includes(d.program)) return
+      }
+      
+      const existing = getOrCreate(d.program)
+      // Only increment lateCount if not already counted in pmFilteredDeliveries
+      // (i.e., if we're in upcoming mode where late items were filtered out)
+      if (pmMode === "upcoming") {
+        existing.lateCount++
+        existing.driverCounts[d.driver]++
+        existing.ownerCounts[d.escalationOwner]++
+        const daysToDue = d.daysToDue ?? 999
+        if (daysToDue < existing.nearestDue) existing.nearestDue = daysToDue
+      }
       programMap.set(d.program, existing)
     })
     
@@ -424,14 +475,15 @@ export function OTDTracking() {
         return { program, ...data, dominantDriver, dominantOwner, ownerShort }
       })
       .sort((a, b) => (b.atRiskCount + b.lateCount) - (a.atRiskCount + a.lateCount) || a.nearestDue - b.nearestDue)
-  }, [pmFilteredDeliveries])
+  }, [pmFilteredDeliveries, pmEnrichedDeliveries, pmSelectedManager, pmSelectedProgram, pmSelectedPrograms, pmMode, programManagerMapping])
 
   // PM: KPI calculations with proper zero-handling using resolved dates
   const pmKpis = useMemo(() => {
     const dueInHorizon = pmFilteredDeliveries.length
     const atRiskCount = pmAtRiskOnlyDeliveries.length
-    const lateCount = pmLateDeliveries.length
-    const totalAtRiskAndLate = pmAtRiskDeliveries.length
+    // Use total late count that includes items outside horizon filter
+    const lateCount = pmTotalLateCount
+    const totalAtRiskAndLate = atRiskCount + lateCount
     
     const driverCounts = { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 }
     const programCounts = new Map<string, number>()
@@ -450,7 +502,7 @@ export function OTDTracking() {
     const topProgramCount = totalAtRiskAndLate > 0 ? sortedPrograms[0]?.[1] : 0
     
     return { dueInHorizon, atRiskCount, lateCount, totalAtRiskAndLate, topDriver, topDriverCount, topProgram, topProgramCount }
-  }, [pmFilteredDeliveries, pmAtRiskDeliveries, pmAtRiskOnlyDeliveries, pmLateDeliveries])
+  }, [pmFilteredDeliveries, pmAtRiskDeliveries, pmAtRiskOnlyDeliveries, pmTotalLateCount])
 
   // PM: Escalation groups by owner (4 internal owners only, no Customer bucket)
   const pmEscalationOwners = ["Supply Chain/Buyer", "Quality/MRB", "Factory/Operations", "Production Planner"] as const
