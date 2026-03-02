@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ChevronDown, ChevronRight, AlertTriangle } from "lucide-react"
 import { mockProgramData, type Operation, type MaterialShortage } from "@/lib/mock-data"
-import { format, addMonths, eachMonthOfInterval, differenceInDays } from "date-fns"
+import { format } from "date-fns/format"
+import { addMonths } from "date-fns/addMonths"
+import { eachMonthOfInterval } from "date-fns/eachMonthOfInterval"
+import { differenceInDays } from "date-fns/differenceInDays"
 
 export function ScheduleMaterialRisk() {
   const programs = mockProgramData

@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Badge } from "@/components/ui/badge"
 import { CalendarIcon, Check, X } from "lucide-react"
-import { format } from "date-fns"
+import { format } from "date-fns/format"
 import { cn } from "@/lib/utils"
 
 const COMMODITIES = ["Processor", "RF Module", "PCB", "Connector", "Labor"]
