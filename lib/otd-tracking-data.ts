@@ -3,13 +3,14 @@
 // ---- Core Types ----
 
 export type OTDStatus = "On-Time" | "Late" | "At-Risk" | "Outstanding"
-export type DriverCategory = "Supply" | "MRB/RI" | "Capacity" | "Planning"
+export type DriverCategory = "Supply" | "MRB/RI" | "Factory" | "Planning"
 export type SeverityLevel = "Critical" | "High" | "Medium" | "Low"
 export type TimeBucket = "Week" | "Month" | "Quarter"
 export type MRBStep = "Receiving Inspection" | "MRB Review" | "Disposition" | "Released"
 
 // Detailed reason categories for deep-dive analysis
-export type CapacityReason = "Workcenter Bottleneck" | "Test Constraint" | "Machine Downtime" | "Staffing Shortage" | "Setup/Changeover" | "Rework/Yield Loss" | "Unknown Capacity"
+// Factory reasons cover all shop-floor blocking issues (not just "capacity")
+export type FactoryReason = "Machine Downtime" | "Staffing Shortage" | "Setup/Changeover" | "Rework/Yield Loss" | "Test Constraint" | "Workcenter Queue" | "Tool/Fixture Unavailable" | "Quality Hold" | "Unknown Factory"
 export type MRBReason = "RI Backlog" | "MRB Review Pending" | "Disposition Pending" | "Rework Required" | "Retest/Re-inspection" | "Waiting on Engineering" | "Waiting on Supplier" | "Unknown MRB"
 export type PlanningReason = "Plan Date Behind Contract" | "Forecast Mismatch" | "Contract Change Not Reflected" | "Sequencing/Priority Issue" | "Unknown Planning"
 
@@ -54,7 +55,7 @@ export type OTDDelivery = {
   changeHistory: { date: Date; field: string; from: string; to: string }[]
   // Deep-dive fields for Factory/Ops, Quality/MRB, Planning analysis
   workcenter: Workcenter | null
-  capacityReason: CapacityReason | null
+  factoryReason: FactoryReason | null
   mrbStep: MRBStep | null
   mrbReason: MRBReason | null
   planningReason: PlanningReason | null
@@ -141,8 +142,8 @@ const owners = ["J. Smith", "M. Rodriguez", "A. Chen", "K. Patel", "S. Johnson",
 // Workcenters/Test Cells for Factory/Ops analysis
 const workcenters: Workcenter[] = ["CNC-104", "CNC-105", "CNC-108", "CNC-115", "CNC-116", "CNC-119", "CNC-120", "Assembly-A", "Assembly-B", "Assembly-C", "Test-Cell-1", "Test-Cell-2", "Test-Cell-3", "Paint-01", "Weld-A", "Weld-B", "Inspection-01", "Pack-Ship"]
 
-// Capacity reasons for Factory/Ops deep dive
-const capacityReasons: CapacityReason[] = ["Workcenter Bottleneck", "Test Constraint", "Machine Downtime", "Staffing Shortage", "Setup/Changeover", "Rework/Yield Loss", "Unknown Capacity"]
+// Factory reasons for Factory/Ops deep dive - all shop-floor blocking issues
+const factoryReasons: FactoryReason[] = ["Machine Downtime", "Staffing Shortage", "Setup/Changeover", "Rework/Yield Loss", "Test Constraint", "Workcenter Queue", "Tool/Fixture Unavailable", "Quality Hold", "Unknown Factory"]
 
 // MRB reasons for Quality/MRB deep dive
 const mrbReasons: MRBReason[] = ["RI Backlog", "MRB Review Pending", "Disposition Pending", "Rework Required", "Retest/Re-inspection", "Waiting on Engineering", "Waiting on Supplier", "Unknown MRB"]
@@ -152,13 +153,15 @@ const mrbSteps: MRBStep[] = ["Receiving Inspection", "MRB Review", "Disposition"
 const planningReasons: PlanningReason[] = ["Plan Date Behind Contract", "Forecast Mismatch", "Contract Change Not Reflected", "Sequencing/Priority Issue", "Unknown Planning"]
 
 // Evidence templates by driver
-const capacityEvidenceTemplates = [
-  "WC constraint on {wc} - queue depth {n}",
+const factoryEvidenceTemplates = [
+  "Machine down on {wc} - {n} hours lost",
+  "Staffing shortage in {wc} - {n} operators needed",
+  "Setup/changeover on {wc} took {n}h longer than planned",
+  "Rework required on {wc} - yield fallout {n}%",
   "Test cell {wc} backlog - {n} units waiting",
-  "Downtime on {wc} - {n} hours lost",
-  "Staff shortage in {wc} area",
-  "Setup delay on {wc} - changeover took {n}h",
-  "Rework loop on {wc} - yield issue"
+  "Queue depth at {wc} = {n} jobs ahead",
+  "Tool unavailable for {wc} - ETA {n} days",
+  "Quality hold at {wc} pending disposition"
 ]
 const mrbEvidenceTemplates = [
   "NC-{nc} in RI queue - {n} days",
@@ -196,7 +199,7 @@ function addDays(date: Date, days: number): Date {
 
 function deriveDriver(delivery: Partial<OTDDelivery>): DriverCategory {
   if (delivery.mrbHold || delivery.riQueue) return "MRB/RI"
-  if (delivery.capacityConstrained) return "Capacity"
+  if (delivery.capacityConstrained) return "Factory"
   if (delivery.planningMisaligned) return "Planning"
   return "Supply"
 }
@@ -205,7 +208,7 @@ function deriveEscalateTo(driver: DriverCategory): string {
   switch (driver) {
     case "Supply": return "Supply Chain / Buyer"
     case "MRB/RI": return "Quality / MRB"
-    case "Capacity": return "Factory / Operations"
+    case "Factory": return "Factory / Operations"
     case "Planning": return "Production Planner"
   }
 }
@@ -220,8 +223,8 @@ function deriveSeverity(daysLate: number, contractDateDelta: number): SeverityLe
 function generateEvidence(driver: DriverCategory, workcenter: Workcenter | null, ncNumber: string | null, deltaDays: number): string {
   const n = randomInt(2, 45)
   switch (driver) {
-    case "Capacity": {
-      const template = randomChoice(capacityEvidenceTemplates)
+    case "Factory": {
+      const template = randomChoice(factoryEvidenceTemplates)
       return template.replace("{wc}", workcenter || "WC").replace("{n}", String(n))
     }
     case "MRB/RI": {
@@ -284,8 +287,8 @@ export function generateOTDDeliveries(count: number = 150): OTDDelivery[] {
     const owner = randomChoice(owners)
     
     // Generate deep-dive fields based on driver
-    const workcenter = driver === "Capacity" ? randomChoice(workcenters) : null
-    const capacityReason = driver === "Capacity" ? randomChoice(capacityReasons) : null
+    const workcenter = driver === "Factory" ? randomChoice(workcenters) : null
+    const factoryReason = driver === "Factory" ? randomChoice(factoryReasons) : null
     const ncNumber = (driver === "MRB/RI") ? `NC-${randomInt(10000, 99999)}` : null
     const mrbStep = (driver === "MRB/RI") ? randomChoice(mrbSteps) : null
     const mrbReason = (driver === "MRB/RI") ? randomChoice(mrbReasons) : null
@@ -330,7 +333,7 @@ export function generateOTDDeliveries(count: number = 150): OTDDelivery[] {
       pdmForecastDate: addDays(contractDate, randomInt(-10, 20)),
       // Deep-dive fields
       workcenter,
-      capacityReason,
+      factoryReason,
       mrbStep,
       mrbReason,
       planningReason,

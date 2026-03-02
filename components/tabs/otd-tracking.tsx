@@ -23,7 +23,7 @@ import {
   type DriverCategory,
   type TimeBucket,
   type MRBStep,
-  type CapacityReason,
+  type FactoryReason,
   type MRBReason,
   type PlanningReason,
   type Workcenter,
@@ -32,14 +32,17 @@ import {
 type OTDSubTab = "overview" | "program-manager" | "planner" | "supply-chain" | "quality" | "siop" | "supplier-otd"
 
 // Color palettes for deep-dive analysis charts
-const CAPACITY_REASON_COLORS: Record<string, string> = {
-  "Workcenter Bottleneck": "#EF4444", // red
-  "Test Constraint": "#F97316", // orange
-  "Machine Downtime": "#EAB308", // yellow
-  "Staffing Shortage": "#22C55E", // green
-  "Setup/Changeover": "#06B6D4", // cyan
-  "Rework/Yield Loss": "#8B5CF6", // violet
-  "Unknown Capacity": "#6B7280", // gray
+// Factory reasons cover all shop-floor blocking issues (not just "capacity")
+const FACTORY_REASON_COLORS: Record<string, string> = {
+  "Machine Downtime": "#EF4444", // red - equipment failures
+  "Staffing Shortage": "#F97316", // orange - personnel issues
+  "Setup/Changeover": "#EAB308", // yellow - setup delays
+  "Rework/Yield Loss": "#22C55E", // green - quality/yield
+  "Test Constraint": "#06B6D4", // cyan - test bottlenecks
+  "Workcenter Queue": "#3B82F6", // blue - queue/WIP
+  "Tool/Fixture Unavailable": "#8B5CF6", // violet - tooling
+  "Quality Hold": "#EC4899", // pink - quality holds
+  "Unknown Factory": "#6B7280", // gray
 }
 
 const MRB_REASON_COLORS: Record<string, string> = {
@@ -64,7 +67,7 @@ const PLANNING_REASON_COLORS: Record<string, string> = {
 const DRIVER_COLORS: Record<DriverCategory, string> = {
   Supply: "#3B82F6",
   "MRB/RI": "#F97316",
-  Capacity: "#8B5CF6",
+  Factory: "#8B5CF6",
   Planning: "#10B981",
 }
 
@@ -150,7 +153,7 @@ export function OTDTracking() {
   const topAtRiskDeliveries = atRiskDeliveries.sort((a, b) => b.impactScore - a.impactScore).slice(0, 25)
 
   // Derived: Top driver
-  const driverCounts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
+  const driverCounts = { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 }
   atRiskDeliveries.forEach(d => driverCounts[d.driver]++)
   const topDriver = Object.entries(driverCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as DriverCategory || "Supply"
   const supplyPct = atRiskDeliveries.length > 0 ? Math.round((driverCounts.Supply / atRiskDeliveries.length) * 100) : 0
@@ -187,7 +190,7 @@ export function OTDTracking() {
       // Escalation owner derived from driver
       const escalationOwner = d.driver === "Supply" ? "Supply Chain/Buyer"
         : d.driver === "MRB/RI" ? "Quality/MRB"
-        : d.driver === "Capacity" ? "Factory/Operations"
+        : d.driver === "Factory" ? "Factory/Operations"
         : "Production Planner"
       
       return { 
@@ -392,7 +395,7 @@ export function OTDTracking() {
         nearestDue: 999, 
         dominantDriver: "Supply" as DriverCategory,
         dominantOwner: "Production Planner",
-        driverCounts: { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 },
+        driverCounts: { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 },
         ownerCounts: { "Supply Chain/Buyer": 0, "Quality/MRB": 0, "Factory/Operations": 0, "Production Planner": 0 }
       }
       existing.dueCount++
@@ -430,7 +433,7 @@ export function OTDTracking() {
     const lateCount = pmLateDeliveries.length
     const totalAtRiskAndLate = pmAtRiskDeliveries.length
     
-    const driverCounts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
+    const driverCounts = { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 }
     const programCounts = new Map<string, number>()
     pmAtRiskDeliveries.forEach(d => {
       driverCounts[d.driver]++
@@ -513,7 +516,7 @@ export function OTDTracking() {
     const wcMap = new Map<string, Record<string, number>>()
     factoryOpsWithSlip.forEach(d => {
       const wc = d.workcenter || "Unknown"
-      const reason = d.capacityReason || "Unknown Capacity"
+      const reason = d.factoryReason || "Unknown Factory"
       if (!wcMap.has(wc)) wcMap.set(wc, {})
       const reasons = wcMap.get(wc)!
       reasons[reason] = (reasons[reason] || 0) + d.slipDays
@@ -527,9 +530,9 @@ export function OTDTracking() {
   }, [factoryOpsWithSlip])
   
   // Get unique capacity reasons for chart legend
-  const factoryCapacityReasons = useMemo(() => {
+  const factoryReasonsList = useMemo(() => {
     const reasons = new Set<string>()
-    factoryOpsWithSlip.forEach(d => reasons.add(d.capacityReason || "Unknown Capacity"))
+    factoryOpsWithSlip.forEach(d => reasons.add(d.factoryReason || "Unknown Factory"))
     return Array.from(reasons)
   }, [factoryOpsWithSlip])
   
@@ -537,7 +540,7 @@ export function OTDTracking() {
   const factoryParetoData = useMemo(() => {
     const reasonMap = new Map<string, number>()
     factoryOpsWithSlip.forEach(d => {
-      const reason = d.capacityReason || "Unknown Capacity"
+      const reason = d.factoryReason || "Unknown Factory"
       reasonMap.set(reason, (reasonMap.get(reason) || 0) + d.slipDays)
     })
     const sorted = Array.from(reasonMap.entries()).sort((a, b) => b[1] - a[1])
@@ -637,7 +640,7 @@ export function OTDTracking() {
   // Filtered deliveries for tables
   const factoryTableData = useMemo(() => {
     let data = factoryOpsWithSlip
-    if (factoryReasonFilter) data = data.filter(d => d.capacityReason === factoryReasonFilter)
+    if (factoryReasonFilter) data = data.filter(d => d.factoryReason === factoryReasonFilter)
     return data.sort((a, b) => b.slipDays - a.slipDays)
   }, [factoryOpsWithSlip, factoryReasonFilter])
   
@@ -1782,7 +1785,7 @@ export function OTDTracking() {
               {pmActiveOwnerTab === "Factory/Operations" && factoryOpsWithSlip.length > 0 && (
                 <div className="space-y-5 mt-5">
                   <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                    <Activity className="w-5 h-5" /> Factory/Ops Deep Dive: Capacity Impact Analysis
+                    <Activity className="w-5 h-5" /> Factory/Ops Deep Dive: Shop Floor Blocking Analysis
                   </h3>
                   
                   {/* Charts Row */}
@@ -1791,7 +1794,7 @@ export function OTDTracking() {
                     <Card className="border border-gray-200">
                       <CardHeader className="py-3 px-4">
                         <CardTitle className="text-base font-bold text-gray-800">OTD Slip Impact by Workcenter/Test Cell</CardTitle>
-                        <p className="text-sm text-gray-500">Slip Days = max(0, Expected - Contract). Stacked by Capacity Reason.</p>
+                        <p className="text-sm text-gray-500">Slip Days = max(0, Expected - Contract). Stacked by blocking reason.</p>
                       </CardHeader>
                       <CardContent className="px-4 pb-4">
                         <div className="h-[400px]">
@@ -1802,12 +1805,12 @@ export function OTDTracking() {
                               <YAxis dataKey="workcenter" type="category" width={100} tick={{ fontSize: 11 }} />
                               <Tooltip formatter={(v: number, name: string) => [`${v} days`, name]} />
                               <Legend wrapperStyle={{ fontSize: 11, paddingTop: 10 }} />
-                              {factoryCapacityReasons.map(reason => (
+                              {factoryReasonsList.map(reason => (
                                 <Bar 
                                   key={reason} 
                                   dataKey={reason} 
                                   stackId="a" 
-                                  fill={CAPACITY_REASON_COLORS[reason] || "#6B7280"}
+                                  fill={FACTORY_REASON_COLORS[reason] || "#6B7280"}
                                   cursor="pointer"
                                   onClick={() => setFactoryReasonFilter(factoryReasonFilter === reason ? null : reason)}
                                 />
@@ -1821,7 +1824,7 @@ export function OTDTracking() {
                     {/* Pareto: Top Capacity Loss Reasons */}
                     <Card className="border border-gray-200">
                       <CardHeader className="py-3 px-4">
-                        <CardTitle className="text-base font-bold text-gray-800">Top Capacity Loss Reasons (Slip Days)</CardTitle>
+                        <CardTitle className="text-base font-bold text-gray-800">Top Factory Blocking Reasons (Slip Days)</CardTitle>
                         <p className="text-sm text-gray-500">Click a bar to filter the workcenter chart and table below.</p>
                       </CardHeader>
                       <CardContent className="px-4 pb-4">
@@ -1841,7 +1844,7 @@ export function OTDTracking() {
                                 onClick={(data) => setFactoryReasonFilter(factoryReasonFilter === data.reason ? null : data.reason)}
                               >
                                 {factoryParetoData.map((entry, i) => (
-                                  <Cell key={i} fill={factoryReasonFilter === entry.reason ? "#1D4ED8" : (CAPACITY_REASON_COLORS[entry.reason] || "#6B7280")} />
+                                  <Cell key={i} fill={factoryReasonFilter === entry.reason ? "#1D4ED8" : (FACTORY_REASON_COLORS[entry.reason] || "#6B7280")} />
                                 ))}
                               </Bar>
                               <Line yAxisId="right" type="monotone" dataKey="cumulativePct" stroke="#EF4444" strokeWidth={2} dot={{ fill: "#EF4444", r: 4 }} />
@@ -1873,7 +1876,7 @@ export function OTDTracking() {
                         <table className="w-full">
                           <thead className="sticky top-0 bg-gray-50">
                             <tr className="border-b border-gray-200">
-                              {["Program", "CLIN", "Workcenter", "Capacity Reason", "Contract", "Expected", "Slip Days", "Evidence", "Action"].map(h => (
+                              {["Program", "CLIN", "Workcenter", "Factory Reason", "Contract", "Expected", "Slip Days", "Evidence", "Action"].map(h => (
                                 <th key={h} className="text-left p-3 text-sm font-bold text-gray-700 whitespace-nowrap">{h}</th>
                               ))}
                             </tr>
@@ -1885,8 +1888,8 @@ export function OTDTracking() {
                                 <td className="p-3 text-sm text-gray-700">{d.clin}</td>
                                 <td className="p-3 text-sm font-medium text-blue-600">{d.workcenter || "—"}</td>
                                 <td className="p-3">
-                                  <span className="px-2 py-1 rounded text-xs font-medium" style={{ backgroundColor: `${CAPACITY_REASON_COLORS[d.capacityReason || "Unknown Capacity"]}20`, color: CAPACITY_REASON_COLORS[d.capacityReason || "Unknown Capacity"] }}>
-                                    {d.capacityReason || "Unknown"}
+                                  <span className="px-2 py-1 rounded text-xs font-medium" style={{ backgroundColor: `${FACTORY_REASON_COLORS[d.factoryReason || "Unknown Factory"]}20`, color: FACTORY_REASON_COLORS[d.factoryReason || "Unknown Factory"] }}>
+                                    {d.factoryReason || "Unknown"}
                                   </span>
                                 </td>
                                 <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
