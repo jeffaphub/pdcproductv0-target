@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { AlertTriangle, Calendar, Clock, Package, Thermometer, MapPin, Search, X, RefreshCw, FileText, Users, Clipboard, Target } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts"
 
@@ -304,6 +305,16 @@ export function ShelfLifeTracking() {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     
+    // Build a map of part numbers to available in-life lots
+    const partToInLifeLots = new Map<string, LotRecord[]>()
+    filteredLots.forEach(lot => {
+      if (lot.daysToExpiry > 14) { // In-life = more than 14 days to expiry
+        const existing = partToInLifeLots.get(lot.partNumber) || []
+        existing.push(lot)
+        partToInLifeLots.set(lot.partNumber, existing)
+      }
+    })
+    
     const conflicts: Array<{
       lotId: string
       lot: LotRecord
@@ -313,37 +324,72 @@ export function ShelfLifeTracking() {
       lotBatch: string
       location: LocationBucket
       qtyAtRisk: number
-      contractDate: Date | null
+      earliestPeggedUse: Date | null
       plannedUseDate: Date
       expiryDate: Date
       deltaDays: number
       riskType: RiskType
-      recertInfo: string
+      recertAllowed: boolean
+      recertCycles: number
+      alternateLotsAvailable: number
+      actionOwner: "Planner" | "Quality" | "Buyer" | "Stores"
       recommendedAction: string
+      secondaryAction: string | null
     }> = []
     
     filteredLots.forEach(lot => {
+      // Calculate earliest pegged use date for this lot
+      const earliestPeggedUse = lot.linkedDemand.length > 0
+        ? lot.linkedDemand.reduce((min, d) => d.plannedUseDate < min ? d.plannedUseDate : min, lot.linkedDemand[0].plannedUseDate)
+        : null
+      
+      // Count alternate in-life lots for this part (excluding current lot)
+      const alternateLots = (partToInLifeLots.get(lot.partNumber) || []).filter(l => l.id !== lot.id)
+      const alternateLotsAvailable = alternateLots.length
+      
       // For lots with linked demand, create a row per conflict
       if (lot.linkedDemand.length > 0) {
         lot.linkedDemand.forEach(demand => {
           const daysToUse = Math.floor((demand.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
-          const deltaDays = daysToUse - lot.daysToExpiry // positive = expires before use
+          const deltaDays = daysToUse - lot.daysToExpiry // positive = lot expires before planned use
           
+          // Rule-based recommendations with owner assignment
           let recommendedAction = "Monitor"
-          if (lot.riskType === "Expires before use" || deltaDays > 0) {
-            // Check if there's an earlier job that could consume this lot
-            const hasEarlierJob = lot.linkedDemand.some(d => {
-              const otherDaysToUse = Math.floor((d.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
-              return otherDaysToUse < lot.daysToExpiry && d.woNumber !== demand.woNumber
-            })
-            recommendedAction = hasEarlierJob ? "Resequence / Pull-in to earlier job" : "Trigger replacement buy"
+          let secondaryAction: string | null = null
+          let actionOwner: "Planner" | "Quality" | "Buyer" | "Stores" = "Planner"
+          
+          const hasConflict = deltaDays > 0 || lot.riskType === "Expires before use"
+          const canResequence = lot.linkedDemand.some(d => {
+            const otherDaysToUse = Math.floor((d.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+            return otherDaysToUse < lot.daysToExpiry && d.woNumber !== demand.woNumber
+          })
+          
+          if (hasConflict) {
+            if (lot.recertAllowed && lot.recertCyclesRemaining > 0) {
+              // Recert is possible
+              recommendedAction = "Start recert / extension decision"
+              secondaryAction = "Replace buy if recert not feasible"
+              actionOwner = "Quality"
+            } else if (canResequence) {
+              // Can pull in to earlier job
+              recommendedAction = "Resequence / pull-in to earlier job"
+              actionOwner = "Planner"
+            } else {
+              // No recert, no resequence option
+              recommendedAction = "Replace buy + segregate/scrap"
+              actionOwner = alternateLotsAvailable > 0 ? "Stores" : "Buyer"
+            }
           } else if (lot.riskType === "Near-expiry pegged") {
-            recommendedAction = "Consume first / Use-first priority"
+            recommendedAction = "Prioritize consumption (use-first)"
+            actionOwner = "Planner"
           } else if (lot.riskType === "Expires during build") {
             if (lot.recertAllowed && lot.recertCyclesRemaining > 0) {
-              recommendedAction = "Pull-in operation or coordinate recert"
+              recommendedAction = "Coordinate mid-build recert"
+              secondaryAction = "Pull-in operation if feasible"
+              actionOwner = "Quality"
             } else {
               recommendedAction = "Pull-in operation or split lot"
+              actionOwner = "Planner"
             }
           }
           
@@ -356,13 +402,17 @@ export function ShelfLifeTracking() {
             lotBatch: lot.lotBatch,
             location: lot.location,
             qtyAtRisk: Math.min(demand.qty, lot.quantity),
-            contractDate: null, // Not available in current data
+            earliestPeggedUse,
             plannedUseDate: demand.plannedUseDate,
             expiryDate: lot.expiryDate,
             deltaDays,
             riskType: deltaDays > 0 ? "Expires before use" : lot.riskType,
-            recertInfo: lot.recertAllowed ? `Yes (${lot.recertCyclesRemaining} cycles)` : "No",
-            recommendedAction
+            recertAllowed: lot.recertAllowed,
+            recertCycles: lot.recertCyclesRemaining,
+            alternateLotsAvailable,
+            actionOwner,
+            recommendedAction,
+            secondaryAction
           })
         })
       } else if (lot.riskType === "Near-expiry unpegged") {
@@ -376,13 +426,17 @@ export function ShelfLifeTracking() {
           lotBatch: lot.lotBatch,
           location: lot.location,
           qtyAtRisk: lot.quantity,
-          contractDate: null,
+          earliestPeggedUse: null,
           plannedUseDate: new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000), // placeholder
           expiryDate: lot.expiryDate,
           deltaDays: -lot.daysToExpiry,
           riskType: "Near-expiry unpegged",
-          recertInfo: lot.recertAllowed ? `Yes (${lot.recertCyclesRemaining} cycles)` : "No",
-          recommendedAction: "Reallocate to other program or flag for move/scrap"
+          recertAllowed: lot.recertAllowed,
+          recertCycles: lot.recertCyclesRemaining,
+          alternateLotsAvailable,
+          actionOwner: "Stores",
+          recommendedAction: "Reallocate to demand or flag for move/scrap",
+          secondaryAction: null
         })
       }
     })
@@ -391,8 +445,25 @@ export function ShelfLifeTracking() {
     return conflicts.sort((a, b) => b.deltaDays - a.deltaDays)
   }, [filteredLots])
   
+  // Use-first opportunities: lots expiring soon that could be consumed before expiry
+  const useFirstOpportunities = useMemo(() => {
+    return plannerWorklist.filter(row => {
+      // Include if: near-expiry pegged with use before expiry, OR can be pulled in
+      return (row.riskType === "Near-expiry pegged" && row.deltaDays <= 0) ||
+             (row.deltaDays > 0 && row.recommendedAction.includes("Resequence"))
+    })
+  }, [plannerWorklist])
+  
+  // Conflicts: use after expiry
+  const conflictWorklist = useMemo(() => {
+    return plannerWorklist.filter(row => row.deltaDays > 0 || row.riskType === "Expires before use")
+  }, [plannerWorklist])
+  
   // State for timeline row selection
   const [selectedTimelineLot, setSelectedTimelineLot] = useState<string | null>(null)
+  
+  // Planner view mode toggle
+  const [plannerViewMode, setPlannerViewMode] = useState<"conflicts" | "use-first">("conflicts")
   
   // Open drawer
   const handleLotClick = (lot: LotRecord) => {
@@ -562,7 +633,38 @@ export function ShelfLifeTracking() {
       
       {/* ===== PLANNER / PRODUCTION CONTROL PERSONA ===== */}
       {activePersona === "Planner / Production Control" && (
+        <TooltipProvider>
         <div className="space-y-5">
+          {/* Mode Toggle */}
+          <Card className="border border-gray-200">
+            <CardContent className="p-3">
+              <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+                <button
+                  onClick={() => setPlannerViewMode("conflicts")}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                    plannerViewMode === "conflicts"
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                  }`}
+                >
+                  <AlertTriangle className="w-4 h-4 inline mr-2" />
+                  Conflicts: Use after expiry
+                </button>
+                <button
+                  onClick={() => setPlannerViewMode("use-first")}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                    plannerViewMode === "use-first"
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                  }`}
+                >
+                  <Clock className="w-4 h-4 inline mr-2" />
+                  Use-first opportunities
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+          
           {/* ZONE A: KPI Strip - 5 Large Tiles */}
           <div className="grid grid-cols-12 gap-4">
             {[
@@ -582,18 +684,42 @@ export function ShelfLifeTracking() {
             ))}
           </div>
           
+          {/* Explanation Banner */}
+          <div className={`rounded-lg px-4 py-3 border ${plannerViewMode === "conflicts" ? "bg-red-50 border-red-200" : "bg-blue-50 border-blue-200"}`}>
+            <p className={`text-sm font-medium ${plannerViewMode === "conflicts" ? "text-red-800" : "text-blue-800"}`}>
+              {plannerViewMode === "conflicts" ? (
+                <>
+                  <AlertTriangle className="w-4 h-4 inline mr-2" />
+                  <strong>Red markers</strong> indicate the work order planned use date is <strong>after</strong> the lot expiry date. These are false-coverage conflicts that require action: resequence, reallocate, recert, or replace.
+                </>
+              ) : (
+                <>
+                  <Clock className="w-4 h-4 inline mr-2" />
+                  <strong>Use-first opportunities</strong> are lots expiring soon that have pegged demand <strong>before</strong> expiry. Prioritize consumption to prevent scrap. Blue markers show safe use windows.
+                </>
+              )}
+            </p>
+          </div>
+          
           {/* ZONE B: Pegging Conflict Timeline (Gantt-like) */}
           <Card className="border-2 border-gray-300">
             <CardHeader className="py-4 px-5 border-b border-gray-200 bg-gray-50">
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg font-bold text-gray-900">Pegging Conflict Timeline</CardTitle>
-                  <p className="text-sm text-gray-500 mt-0.5">Top 20 most urgent lots — click a row to filter worklist and open details</p>
+                  <CardTitle className="text-lg font-bold text-gray-900">
+                    {plannerViewMode === "conflicts" ? "Pegging Conflict Timeline" : "Use-First Opportunity Timeline"}
+                  </CardTitle>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {plannerViewMode === "conflicts" 
+                      ? "Lots where planned use is after expiry — click a row to filter worklist and open details"
+                      : "Lots expiring soon with demand before expiry — prioritize consumption"
+                    }
+                  </p>
                 </div>
                 <div className="flex items-center gap-4 text-xs">
                   <span className="flex items-center gap-1.5"><span className="w-4 h-2 bg-green-500 rounded" /> Life remaining</span>
-                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full" /> Planned use</span>
-                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-red-600 rounded-full border-2 border-red-300" /> Use after expiry</span>
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full" /> Use before expiry</span>
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-red-600 rounded-full ring-2 ring-red-200" /> Use after expiry</span>
                 </div>
               </div>
             </CardHeader>
@@ -614,7 +740,23 @@ export function ShelfLifeTracking() {
                 
                 {/* Timeline rows */}
                 <div className="divide-y divide-gray-100">
-                  {timelineData.map(lot => {
+                  {timelineData
+                    .filter(lot => {
+                      if (plannerViewMode === "conflicts") {
+                        // Show lots with use after expiry
+                        return lot.linkedDemand.some(d => {
+                          const daysToUse = Math.floor((d.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
+                          return daysToUse > lot.daysToExpiry
+                        })
+                      } else {
+                        // Show lots with use before expiry (opportunities)
+                        return lot.linkedDemand.some(d => {
+                          const daysToUse = Math.floor((d.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
+                          return daysToUse <= lot.daysToExpiry && lot.daysToExpiry <= 30
+                        })
+                      }
+                    })
+                    .map(lot => {
                     const maxDays = 180
                     const expiryPct = Math.min(Math.max(lot.daysToExpiry / maxDays * 100, 0), 100)
                     const isSelected = selectedTimelineLot === lot.id
@@ -633,15 +775,24 @@ export function ShelfLifeTracking() {
                           <p className="text-xs text-gray-500 truncate">{lot.partNumber}</p>
                         </div>
                         <div className="flex-1 relative h-14 py-2">
-                          {/* Life bar from today to expiry */}
+                          {/* Life bar from today to expiry - ALWAYS green */}
                           {lot.daysToExpiry > 0 && (
-                            <div 
-                              className={`absolute top-1/2 -translate-y-1/2 h-3 rounded ${lot.daysToExpiry <= 14 ? "bg-red-400" : lot.daysToExpiry <= 30 ? "bg-orange-400" : "bg-green-500"}`}
-                              style={{ left: "0%", width: `${expiryPct}%` }}
-                            >
-                              {/* Expiry marker */}
-                              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-gray-800 rounded" title={`Expires: ${lot.expiryDate.toLocaleDateString()}`} />
-                            </div>
+                            <UITooltip>
+                              <TooltipTrigger asChild>
+                                <div 
+                                  className="absolute top-1/2 -translate-y-1/2 h-3 rounded bg-green-500 cursor-help"
+                                  style={{ left: "0%", width: `${expiryPct}%` }}
+                                >
+                                  {/* Expiry marker */}
+                                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-gray-800 rounded" />
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="bg-gray-900 text-white p-2 text-xs">
+                                <p><strong>Lot:</strong> {lot.lotBatch}</p>
+                                <p><strong>Expiry:</strong> {lot.expiryDate.toLocaleDateString()}</p>
+                                <p><strong>Days remaining:</strong> {lot.daysToExpiry}</p>
+                              </TooltipContent>
+                            </UITooltip>
                           )}
                           
                           {/* Already expired indicator */}
@@ -651,23 +802,32 @@ export function ShelfLifeTracking() {
                             </div>
                           )}
                           
-                          {/* Demand markers */}
+                          {/* Demand markers with tooltips */}
                           {lot.linkedDemand.map((d, i) => {
                             const daysToUse = Math.floor((d.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
                             const usePct = Math.min(Math.max(daysToUse / maxDays * 100, 0), 100)
                             const isAfterExpiry = daysToUse > lot.daysToExpiry
+                            const deltaDays = daysToUse - lot.daysToExpiry
                             
                             return (
-                              <div
-                                key={i}
-                                className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full border-2 ${
-                                  isAfterExpiry 
-                                    ? "bg-red-600 border-red-300 ring-2 ring-red-200" 
-                                    : "bg-blue-600 border-blue-300"
-                                }`}
-                                style={{ left: `${usePct}%` }}
-                                title={`${d.woNumber}: Use ${d.plannedUseDate.toLocaleDateString()}${isAfterExpiry ? " (AFTER EXPIRY)" : ""}`}
-                              />
+                              <UITooltip key={i}>
+                                <TooltipTrigger asChild>
+                                  <div
+                                    className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full border-2 cursor-help ${
+                                      isAfterExpiry 
+                                        ? "bg-red-600 border-red-300 ring-2 ring-red-200" 
+                                        : "bg-blue-600 border-blue-300"
+                                    }`}
+                                    style={{ left: `${usePct}%` }}
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className={`p-2 text-xs ${isAfterExpiry ? "bg-red-900 text-white" : "bg-gray-900 text-white"}`}>
+                                  <p><strong>WO/CLIN:</strong> {d.woNumber} / {d.clin}</p>
+                                  <p><strong>Planned use:</strong> {d.plannedUseDate.toLocaleDateString()}</p>
+                                  <p><strong>Expiry:</strong> {lot.expiryDate.toLocaleDateString()}</p>
+                                  <p><strong>Delta:</strong> <span className={isAfterExpiry ? "text-red-300 font-bold" : "text-green-300"}>{isAfterExpiry ? `+${deltaDays}d (USE AFTER EXPIRY)` : `${deltaDays}d (safe)`}</span></p>
+                                </TooltipContent>
+                              </UITooltip>
                             )
                           })}
                         </div>
@@ -692,9 +852,14 @@ export function ShelfLifeTracking() {
             <CardHeader className="py-4 px-5 border-b border-gray-200 bg-gray-50">
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg font-bold text-gray-900">Planner Exception Worklist</CardTitle>
+                  <CardTitle className="text-lg font-bold text-gray-900">
+                    {plannerViewMode === "conflicts" ? "False-Coverage Conflicts" : "Use-First Opportunities"}
+                  </CardTitle>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {plannerWorklist.length} lot-demand conflicts — sorted by urgency (worst delta first)
+                    {plannerViewMode === "conflicts" 
+                      ? `${conflictWorklist.length} conflicts where planned use is after expiry`
+                      : `${useFirstOpportunities.length} lots that can be consumed before expiry`
+                    }
                     {selectedTimelineLot && " — filtered to selected lot"}
                   </p>
                 </div>
@@ -715,62 +880,96 @@ export function ShelfLifeTracking() {
                       <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Part</th>
                       <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Lot</th>
                       <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Location</th>
-                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Qty at Risk</th>
+                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Qty</th>
+                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Earliest Pegged</th>
                       <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Planned Use</th>
                       <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Expiry</th>
                       <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Delta</th>
-                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Risk Type</th>
-                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Recert?</th>
-                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap min-w-[200px]">Recommended Action</th>
+                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Alt Lots</th>
+                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Owner</th>
+                      <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap min-w-[220px]">Recommended Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {(selectedTimelineLot 
-                      ? plannerWorklist.filter(w => w.lotId === selectedTimelineLot)
-                      : plannerWorklist
-                    ).slice(0, 50).map((row, i) => (
-                      <tr 
-                        key={`${row.lotId}-${i}`} 
-                        className="hover:bg-blue-50 cursor-pointer transition-colors"
-                        onClick={() => handleLotClick(row.lot)}
-                      >
-                        <td className="p-3 text-sm font-medium text-gray-900">{row.program}</td>
-                        <td className="p-3 text-sm font-mono text-blue-600">{row.woClin}</td>
-                        <td className="p-3 text-sm text-gray-700">{row.partNumber}</td>
-                        <td className="p-3 text-sm font-mono text-gray-700">{row.lotBatch}</td>
-                        <td className="p-3 text-sm text-gray-600">{row.location}</td>
-                        <td className="p-3 text-sm font-bold text-gray-900">{row.qtyAtRisk}</td>
-                        <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{row.plannedUseDate.toLocaleDateString()}</td>
-                        <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{row.expiryDate.toLocaleDateString()}</td>
-                        <td className={`p-3 text-sm font-bold whitespace-nowrap ${row.deltaDays > 0 ? "text-red-600" : row.deltaDays > -14 ? "text-orange-600" : "text-green-600"}`}>
-                          {row.deltaDays > 0 ? `+${row.deltaDays}d` : `${row.deltaDays}d`}
-                          {row.deltaDays > 0 && <AlertTriangle className="inline w-3 h-3 ml-1" />}
-                        </td>
-                        <td className="p-3">
-                          <Badge className={`text-[10px] ${getRiskColor(row.riskType)}`}>
-                            {row.riskType.replace("Near-expiry ", "").replace("Expires ", "")}
-                          </Badge>
-                        </td>
-                        <td className="p-3 text-xs text-gray-600">{row.recertInfo}</td>
-                        <td className="p-3 text-sm font-medium text-blue-700">{row.recommendedAction}</td>
-                      </tr>
-                    ))}
-                    {plannerWorklist.length === 0 && (
+                    {(() => {
+                      const displayData = plannerViewMode === "conflicts" ? conflictWorklist : useFirstOpportunities
+                      const filteredData = selectedTimelineLot 
+                        ? displayData.filter(w => w.lotId === selectedTimelineLot)
+                        : displayData
+                      
+                      return filteredData.slice(0, 50).map((row, i) => (
+                        <tr 
+                          key={`${row.lotId}-${i}`} 
+                          className="hover:bg-blue-50 cursor-pointer transition-colors"
+                          onClick={() => handleLotClick(row.lot)}
+                        >
+                          <td className="p-3 text-sm font-medium text-gray-900">{row.program}</td>
+                          <td className="p-3 text-sm font-mono text-blue-600">{row.woClin}</td>
+                          <td className="p-3 text-sm text-gray-700">{row.partNumber}</td>
+                          <td className="p-3 text-sm font-mono text-gray-700">{row.lotBatch}</td>
+                          <td className="p-3 text-sm text-gray-600">{row.location}</td>
+                          <td className="p-3 text-sm font-bold text-gray-900">{row.qtyAtRisk}</td>
+                          <td className="p-3 text-sm text-gray-600 whitespace-nowrap">
+                            {row.earliestPeggedUse ? row.earliestPeggedUse.toLocaleDateString() : "—"}
+                          </td>
+                          <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{row.plannedUseDate.toLocaleDateString()}</td>
+                          <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{row.expiryDate.toLocaleDateString()}</td>
+                          <td className={`p-3 text-sm font-bold whitespace-nowrap ${row.deltaDays > 0 ? "text-red-600" : row.deltaDays > -14 ? "text-orange-600" : "text-green-600"}`}>
+                            {row.deltaDays > 0 ? `+${row.deltaDays}d` : `${row.deltaDays}d`}
+                            {row.deltaDays > 0 && <AlertTriangle className="inline w-3 h-3 ml-1" />}
+                          </td>
+                          <td className="p-3 text-sm">
+                            {row.alternateLotsAvailable > 0 ? (
+                              <Badge variant="outline" className="text-[10px] text-green-700 border-green-300">
+                                Yes ({row.alternateLotsAvailable})
+                              </Badge>
+                            ) : (
+                              <span className="text-gray-400">No</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <Badge variant="outline" className={`text-[10px] ${
+                              row.actionOwner === "Quality" ? "text-purple-700 border-purple-300 bg-purple-50" :
+                              row.actionOwner === "Buyer" ? "text-blue-700 border-blue-300 bg-blue-50" :
+                              row.actionOwner === "Stores" ? "text-orange-700 border-orange-300 bg-orange-50" :
+                              "text-gray-700 border-gray-300 bg-gray-50"
+                            }`}>
+                              {row.actionOwner}
+                            </Badge>
+                          </td>
+                          <td className="p-3">
+                            <div className="text-sm font-medium text-blue-700">{row.recommendedAction}</div>
+                            {row.secondaryAction && (
+                              <div className="text-xs text-gray-500 mt-0.5">{row.secondaryAction}</div>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    })()}
+                    {(plannerViewMode === "conflicts" ? conflictWorklist : useFirstOpportunities).length === 0 && (
                       <tr>
-                        <td colSpan={12} className="p-8 text-center text-gray-400">No lot-demand conflicts in current filters</td>
+                        <td colSpan={13} className="p-8 text-center text-gray-400">
+                          {plannerViewMode === "conflicts" 
+                            ? "No false-coverage conflicts in current filters" 
+                            : "No use-first opportunities in current filters"
+                          }
+                        </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
-              {plannerWorklist.length > 50 && (
+              {(plannerViewMode === "conflicts" ? conflictWorklist : useFirstOpportunities).length > 50 && (
                 <div className="py-3 px-5 border-t border-gray-100 text-center bg-gray-50">
-                  <span className="text-sm text-gray-500">Showing 50 of {plannerWorklist.length} conflicts</span>
+                  <span className="text-sm text-gray-500">
+                    Showing 50 of {(plannerViewMode === "conflicts" ? conflictWorklist : useFirstOpportunities).length} items
+                  </span>
                 </div>
               )}
             </CardContent>
           </Card>
         </div>
+        </TooltipProvider>
       )}
       
       {/* ===== OTHER PERSONAS: Show default KPIs, charts, and worklist ===== */}
