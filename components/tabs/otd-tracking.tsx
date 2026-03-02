@@ -877,10 +877,21 @@ export function OTDTracking() {
   // Planner Work Queue - filtered by planner scope
   const plannerWorkQueue = useMemo(() => {
     const now = Date.now()
+    // Assign planners based on site (deterministic assignment for demo)
+    const siteToPlanner: Record<string, string> = {
+      "Phoenix AZ": "D. Martinez",
+      "Rochester NY": "K. Thompson", 
+      "Dallas TX": "R. Patel",
+      "San Diego CA": "L. Anderson",
+    }
+    
     let result = allDeliveries.map(d => {
       const daysToContract = Math.floor((d.contractDate.getTime() - now) / (24 * 60 * 60 * 1000))
       const planDelta = d.deliveryPlanDate ? Math.floor((d.deliveryPlanDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : 0
       const expectedDelta = d.expectedDate ? Math.floor((d.expectedDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : 0
+      
+      // Assign planner based on site
+      const assignedPlanner = siteToPlanner[d.site] || "D. Martinez"
       
       // Determine status based on deltas
       let status: "On-track" | "At-risk" | "Late" = "On-track"
@@ -906,11 +917,13 @@ export function OTDTracking() {
         status,
         recommendedAction,
         intentStatus,
+        assignedPlanner,
         isException: status !== "On-track" || Math.abs(planDelta) > 7 || Math.abs(expectedDelta) > 7,
       }
     })
     
     // Apply planner scope filters
+    if (plannerSelectedPlanner !== "all") result = result.filter(d => d.assignedPlanner === plannerSelectedPlanner)
     if (plannerSelectedSite !== "all") result = result.filter(d => d.site === plannerSelectedSite)
     if (plannerSelectedProgram !== "all") result = result.filter(d => d.program === plannerSelectedProgram)
     if (plannerSelectedWorkcenter !== "all") result = result.filter(d => d.workcenter === plannerSelectedWorkcenter)
@@ -933,7 +946,7 @@ export function OTDTracking() {
     
     // Sort: days to contract ascending, then biggest behind delta
     return result.sort((a, b) => a.daysToContract - b.daysToContract || b.expectedDelta - a.expectedDelta)
-  }, [allDeliveries, plannerSelectedSite, plannerSelectedProgram, plannerSelectedWorkcenter, plannerTimeFence, plannerExceptionsOnly, plannerBlockerFilter, plannerIntentAnnotations])
+  }, [allDeliveries, plannerSelectedPlanner, plannerSelectedSite, plannerSelectedProgram, plannerSelectedWorkcenter, plannerTimeFence, plannerExceptionsOnly, plannerBlockerFilter, plannerIntentAnnotations])
   
   // Plan Alignment Matrix - top 25 most urgent from work queue
   const plannerAlignmentMatrix = useMemo(() => {
