@@ -59,6 +59,9 @@ export function OTDTracking() {
   const [pmShowEscalationOnly, setPmShowEscalationOnly] = useState(false)
   const [pmSelectedProgram, setPmSelectedProgram] = useState<string | null>(null)
   const [pmDefinitionsOpen, setPmDefinitionsOpen] = useState(false)
+  const [pmDriverFilter, setPmDriverFilter] = useState<DriverCategory | null>(null)
+  const [pmOwnerFilter, setPmOwnerFilter] = useState<string | null>(null)
+  const [pmExpandedOwners, setPmExpandedOwners] = useState<Set<string>>(new Set())
 
   // Global Filters
   const [selectedSites, setSelectedSites] = useState<string[]>([])
@@ -165,73 +168,159 @@ export function OTDTracking() {
     return programManagerMapping[pmSelectedManager] || []
   }, [pmSelectedManager, programs, programManagerMapping])
 
-  // PM: Portfolio list data (ranked programs)
+  // PM: Correct escalation owner derivation from driver
+  const deriveEscalationOwner = (d: OTDDelivery): string => {
+    // Customer escalation required when DaysToContract <= 0 OR (DaysToContract <= 7 AND Expected > Contract)
+    const daysToContract = Math.floor((d.contractDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+    const expectedExceedsContract = d.expectedDate > d.contractDate
+    if (daysToContract <= 0 || (daysToContract <= 7 && expectedExceedsContract)) {
+      return "Customer"
+    }
+    // Derive from driver
+    switch (d.driver) {
+      case "Supply": return "Supply Chain/Buyer"
+      case "MRB/RI": return "Quality/MRB"
+      case "Capacity": return "Factory/Operations"
+      case "Planning": return "Production Planner"
+      default: return "Production Planner"
+    }
+  }
+
+  // PM: Filtered deliveries with correct owner, applying driver/owner filters
+  const pmFilteredAtRisk = useMemo(() => {
+    let result = pmAtRiskDeliveries.map(d => ({
+      ...d,
+      derivedOwner: deriveEscalationOwner(d),
+      daysToContract: Math.floor((d.contractDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+    }))
+    if (pmDriverFilter) result = result.filter(d => d.driver === pmDriverFilter)
+    if (pmOwnerFilter) result = result.filter(d => d.derivedOwner === pmOwnerFilter)
+    // Sort: Late before At-Risk, then by daysToContract asc
+    return result.sort((a, b) => {
+      if (a.otdStatus === "Late" && b.otdStatus !== "Late") return -1
+      if (b.otdStatus === "Late" && a.otdStatus !== "Late") return 1
+      return a.daysToContract - b.daysToContract
+    })
+  }, [pmAtRiskDeliveries, pmDriverFilter, pmOwnerFilter])
+
+  // PM: Portfolio list data (ranked programs) - now includes Late count separately
   const pmPortfolioData = useMemo(() => {
-    const programMap = new Map<string, { count: number; nearestDue: number; driverMix: Record<DriverCategory, number>; hasCustomerRisk: boolean }>()
+    const programMap = new Map<string, { 
+      atRiskCount: number
+      lateCount: number
+      nearestDue: number
+      dominantDriver: DriverCategory
+      driverMix: Record<DriverCategory, number>
+      hasCustomerRisk: boolean 
+    }>()
     
-    pmAtRiskDeliveries.forEach(d => {
-      const existing = programMap.get(d.program) || { count: 0, nearestDue: 999, driverMix: { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }, hasCustomerRisk: false }
-      existing.count++
+    pmFilteredAtRisk.forEach(d => {
+      const existing = programMap.get(d.program) || { 
+        atRiskCount: 0, 
+        lateCount: 0,
+        nearestDue: 999, 
+        dominantDriver: "Supply" as DriverCategory,
+        driverMix: { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }, 
+        hasCustomerRisk: false 
+      }
+      if (d.otdStatus === "Late") existing.lateCount++
+      else existing.atRiskCount++
       existing.driverMix[d.driver]++
-      // Use deltaDays (can be negative for past-due items)
-      const urgency = Math.abs(d.deltaDays)
-      if (urgency < existing.nearestDue) existing.nearestDue = urgency
-      if (d.escalateTo === "Customer" || d.severity === "Critical") existing.hasCustomerRisk = true
+      if (d.daysToContract < existing.nearestDue) existing.nearestDue = d.daysToContract
+      if (d.derivedOwner === "Customer") existing.hasCustomerRisk = true
       programMap.set(d.program, existing)
     })
     
+    // Calculate dominant driver for each program
     return Array.from(programMap.entries())
-      .map(([program, data]) => ({ program, ...data }))
-      .sort((a, b) => b.count - a.count || a.nearestDue - b.nearestDue)
-  }, [pmAtRiskDeliveries])
+      .map(([program, data]) => {
+        const dominantDriver = (Object.entries(data.driverMix) as [DriverCategory, number][])
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || "Supply"
+        return { program, ...data, dominantDriver, total: data.atRiskCount + data.lateCount }
+      })
+      .sort((a, b) => b.total - a.total || a.nearestDue - b.nearestDue)
+  }, [pmFilteredAtRisk])
 
-  // PM: Driver chart data
+  // PM: Driver chart data (uses derived owner mapping)
   const pmDriverChartData = useMemo(() => {
     const counts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
-    pmAtRiskDeliveries.forEach(d => counts[d.driver]++)
+    pmFilteredAtRisk.forEach(d => counts[d.driver]++)
     return (["Supply", "MRB/RI", "Capacity", "Planning"] as DriverCategory[]).map(driver => ({
       driver,
       count: counts[driver],
       fill: DRIVER_COLORS[driver],
     }))
-  }, [pmAtRiskDeliveries])
+  }, [pmFilteredAtRisk])
 
-  // PM: Owner chart data
+  // PM: Owner chart data (uses derived owner)
   const pmOwnerChartData = useMemo(() => {
     const ownerLabels: Record<string, string> = {
-      "Supply Chain/Buyer": "Buyer",
+      "Supply Chain/Buyer": "Supply Chain/Buyer",
       "Quality/MRB": "Quality/MRB",
       "Factory/Operations": "Factory/Ops",
       "Production Planner": "Planner",
       "Customer": "Customer",
     }
     const counts = new Map<string, number>()
-    pmAtRiskDeliveries.forEach(d => counts.set(d.escalateTo, (counts.get(d.escalateTo) || 0) + 1))
+    pmFilteredAtRisk.forEach(d => counts.set(d.derivedOwner, (counts.get(d.derivedOwner) || 0) + 1))
     return ["Supply Chain/Buyer", "Quality/MRB", "Factory/Operations", "Production Planner", "Customer"].map(owner => ({
       owner: ownerLabels[owner],
       fullOwner: owner,
       count: counts.get(owner) || 0,
       fill: owner === "Customer" ? "#EF4444" : "#3B82F6",
     }))
-  }, [pmAtRiskDeliveries])
+  }, [pmFilteredAtRisk])
 
-  // PM: Primary/Secondary driver + owner insight sentence
-  const pmInsightSentence = useMemo(() => {
-    const sortedDrivers = [...pmDriverChartData].sort((a, b) => b.count - a.count)
-    const sortedOwners = [...pmOwnerChartData].sort((a, b) => b.count - a.count)
-    const primary = sortedDrivers[0]
-    const secondary = sortedDrivers[1]
-    const primaryOwner = sortedOwners[0]
-    const secondaryOwner = sortedOwners[1]
+  // PM: Top drivers by program table data
+  const pmTopDriversByProgram = useMemo(() => {
+    const programMap = new Map<string, { total: number; dominantDriver: DriverCategory; dominantOwner: string; driverCounts: Record<DriverCategory, number>; ownerCounts: Map<string, number> }>()
     
-    if (!primary || primary.count === 0) return "No at-risk items in selected scope."
+    pmFilteredAtRisk.forEach(d => {
+      const existing = programMap.get(d.program) || { 
+        total: 0, 
+        dominantDriver: "Supply" as DriverCategory, 
+        dominantOwner: "Production Planner",
+        driverCounts: { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 },
+        ownerCounts: new Map()
+      }
+      existing.total++
+      existing.driverCounts[d.driver]++
+      existing.ownerCounts.set(d.derivedOwner, (existing.ownerCounts.get(d.derivedOwner) || 0) + 1)
+      programMap.set(d.program, existing)
+    })
     
-    let sentence = `Primary driver: ${primary.driver} (${primary.count}) → escalate to ${primaryOwner?.owner || "N/A"}.`
-    if (secondary && secondary.count > 0) {
-      sentence += ` Secondary: ${secondary.driver} (${secondary.count}) → ${secondaryOwner?.owner || "N/A"}.`
-    }
-    return sentence
-  }, [pmDriverChartData, pmOwnerChartData])
+    return Array.from(programMap.entries())
+      .map(([program, data]) => {
+        const dominantDriver = (Object.entries(data.driverCounts) as [DriverCategory, number][])
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || "Supply"
+        const dominantOwner = Array.from(data.ownerCounts.entries())
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || "Planner"
+        return { program, total: data.total, dominantDriver, dominantOwner }
+      })
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5)
+  }, [pmFilteredAtRisk])
+
+  // PM: Escalation groups by owner with counts
+  const pmEscalationGroups = useMemo(() => {
+    const groups = [
+      { owner: "Supply Chain/Buyer", label: "Escalate to Supply Chain / Buyer", items: [] as typeof pmFilteredAtRisk },
+      { owner: "Quality/MRB", label: "Escalate to Quality / MRB", items: [] as typeof pmFilteredAtRisk },
+      { owner: "Factory/Operations", label: "Escalate to Factory / Operations", items: [] as typeof pmFilteredAtRisk },
+      { owner: "Production Planner", label: "Escalate to Production Planner", items: [] as typeof pmFilteredAtRisk },
+      { owner: "Customer", label: "Customer escalation required", items: [] as typeof pmFilteredAtRisk },
+    ]
+    
+    pmFilteredAtRisk.forEach(d => {
+      const group = groups.find(g => g.owner === d.derivedOwner)
+      if (group) group.items.push(d)
+    })
+    
+    // Find largest group to auto-expand
+    const largestOwner = groups.reduce((max, g) => g.items.length > max.items.length ? g : max, groups[0]).owner
+    
+    return { groups, largestOwner }
+  }, [pmFilteredAtRisk])
 
   // Insight Header: dynamic summary
   const insightSummary = useMemo(() => {
@@ -752,22 +841,12 @@ export function OTDTracking() {
                 <CardContent className="py-3 px-4">
                   <div className="flex items-center gap-4 flex-wrap">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-gray-600">Program Manager:</span>
-                      <Select value={pmSelectedManager} onValueChange={v => { setPmSelectedManager(v); setPmSelectedPrograms([]); setPmSelectedProgram(null); }}>
-                        <SelectTrigger className="w-[140px] h-8 text-xs"><SelectValue placeholder="All" /></SelectTrigger>
+                      <span className="text-xs font-medium text-gray-600">PM:</span>
+                      <Select value={pmSelectedManager} onValueChange={v => { setPmSelectedManager(v); setPmSelectedPrograms([]); setPmSelectedProgram(null); setPmDriverFilter(null); setPmOwnerFilter(null); }}>
+                        <SelectTrigger className="w-[130px] h-8 text-xs"><SelectValue placeholder="All" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All Managers</SelectItem>
                           {programManagers.map(pm => <SelectItem key={pm} value={pm}>{pm}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-gray-600">Programs:</span>
-                      <Select value={pmSelectedPrograms[0] || "all"} onValueChange={v => { setPmSelectedPrograms(v === "all" ? [] : [v]); setPmSelectedProgram(null); }}>
-                        <SelectTrigger className="w-[130px] h-8 text-xs"><SelectValue placeholder="All Programs" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All Programs</SelectItem>
-                          {pmAvailablePrograms.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -785,19 +864,32 @@ export function OTDTracking() {
                         ))}
                       </div>
                     </div>
-                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={pmShowEscalationOnly}
-                        onChange={e => setPmShowEscalationOnly(e.target.checked)}
-                        className="rounded border-gray-300"
-                      />
-                      <span className="text-gray-600">Escalation needed only</span>
-                    </label>
-                    {pmSelectedProgram && (
-                      <button onClick={() => setPmSelectedProgram(null)} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                        <X className="w-3 h-3" /> Clear program filter
-                      </button>
+                    {/* Active Filters Display */}
+                    {(pmSelectedProgram || pmDriverFilter || pmOwnerFilter) && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-500">Filters:</span>
+                        {pmSelectedProgram && (
+                          <Badge variant="outline" className="gap-1 text-[10px]">
+                            {pmSelectedProgram}
+                            <X className="w-3 h-3 cursor-pointer" onClick={() => setPmSelectedProgram(null)} />
+                          </Badge>
+                        )}
+                        {pmDriverFilter && (
+                          <Badge variant="outline" className="gap-1 text-[10px]" style={{ borderColor: DRIVER_COLORS[pmDriverFilter], color: DRIVER_COLORS[pmDriverFilter] }}>
+                            {pmDriverFilter}
+                            <X className="w-3 h-3 cursor-pointer" onClick={() => setPmDriverFilter(null)} />
+                          </Badge>
+                        )}
+                        {pmOwnerFilter && (
+                          <Badge variant="outline" className="gap-1 text-[10px]">
+                            {pmOwnerFilter}
+                            <X className="w-3 h-3 cursor-pointer" onClick={() => setPmOwnerFilter(null)} />
+                          </Badge>
+                        )}
+                        <button onClick={() => { setPmSelectedProgram(null); setPmDriverFilter(null); setPmOwnerFilter(null); }} className="text-blue-600 hover:underline">
+                          Clear all
+                        </button>
+                      </div>
                     )}
                     <button
                       onClick={() => setPmDefinitionsOpen(!pmDefinitionsOpen)}
@@ -808,10 +900,11 @@ export function OTDTracking() {
                   </div>
                   {pmDefinitionsOpen && (
                     <div className="mt-3 p-3 bg-white rounded border border-gray-200 text-xs text-gray-600 space-y-1.5">
-                      <p><strong>At-Risk:</strong> Delivery where Expected/Promise date &gt; Contract date OR status flagged by system.</p>
-                      <p><strong>Driver:</strong> Supply = PO late/short; MRB/RI = material in inspection/MRB; Capacity = workcenter constraint; Planning = plan date mismatch.</p>
-                      <p><strong>Escalation Owner:</strong> Supply→Buyer; MRB/RI→Quality; Capacity→Factory/Ops; Planning→Planner; Customer flag if Days to Contract ≤0 and still at risk.</p>
-                      <p><strong>Days to Contract:</strong> Calendar days from today to contractual delivery date.</p>
+                      <p><strong>At-Risk:</strong> Delivery where Expected Date &gt; Contract Date OR flagged by system rules.</p>
+                      <p><strong>Driver:</strong> Supply = PO late/short; MRB/RI = material in inspection/MRB queue; Capacity = workcenter constraint; Planning = plan date mismatch.</p>
+                      <p><strong>Escalation Owner:</strong> Supply→Supply Chain/Buyer; MRB/RI→Quality/MRB; Capacity→Factory/Operations; Planning→Production Planner.</p>
+                      <p><strong>Customer Escalation:</strong> Required when Days to Contract ≤0 OR (Days to Contract ≤7 AND Expected &gt; Contract).</p>
+                      <p><strong>Days to Contract:</strong> Calendar days from today to contractual delivery date. Negative = past due.</p>
                     </div>
                   )}
                 </CardContent>
@@ -819,42 +912,60 @@ export function OTDTracking() {
 
               {/* THREE ZONE LAYOUT */}
               <div className="flex gap-4">
-                {/* ZONE A: Portfolio List (Left) */}
-                <div className="w-[280px] shrink-0">
+                {/* ZONE A: Program Risk Cards (Left) */}
+                <div className="w-[300px] shrink-0">
                   <Card className="border border-gray-200 h-full">
                     <CardHeader className="py-2 px-3 border-b border-gray-100">
-                      <CardTitle className="text-xs font-semibold text-gray-700">Portfolio List</CardTitle>
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-xs font-semibold text-gray-700">Program Risk Cards</CardTitle>
+                        <span className="text-[10px] text-gray-400">{pmPortfolioData.length} programs</span>
+                      </div>
                     </CardHeader>
-                    <CardContent className="p-0 max-h-[600px] overflow-y-auto">
+                    <CardContent className="p-0 max-h-[650px] overflow-y-auto">
                       {pmPortfolioData.length === 0 ? (
-                        <div className="p-4 text-center text-xs text-gray-400">No at-risk items in selected scope</div>
+                        <div className="p-6 text-center text-xs text-gray-400">No at-risk items in selected scope</div>
                       ) : (
                         <div className="divide-y divide-gray-100">
                           {pmPortfolioData.map(prog => {
                             const isSelected = pmSelectedProgram === prog.program
-                            const total = prog.driverMix.Supply + prog.driverMix["MRB/RI"] + prog.driverMix.Capacity + prog.driverMix.Planning
+                            const driverTotal = prog.driverMix.Supply + prog.driverMix["MRB/RI"] + prog.driverMix.Capacity + prog.driverMix.Planning
                             return (
                               <div
                                 key={prog.program}
                                 onClick={() => setPmSelectedProgram(isSelected ? null : prog.program)}
-                                className={`p-3 cursor-pointer transition-colors ${isSelected ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-gray-50"}`}
+                                className={`p-3 cursor-pointer transition-all ${isSelected ? "bg-blue-50 border-l-4 border-blue-500" : "hover:bg-gray-50 border-l-4 border-transparent"}`}
                               >
-                                <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-start justify-between gap-3">
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm font-semibold text-gray-900 truncate">{prog.program}</p>
-<p className={`text-[10px] ${prog.nearestDue <= 7 ? "text-red-600 font-medium" : prog.nearestDue <= 14 ? "text-yellow-600" : "text-gray-500"}`}>
-                                    Delta: {prog.nearestDue}d slip
-                                  </p>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <Badge variant="outline" className="text-[9px] px-1.5 py-0" style={{ borderColor: DRIVER_COLORS[prog.dominantDriver], color: DRIVER_COLORS[prog.dominantDriver] }}>
+                                        {prog.dominantDriver}
+                                      </Badge>
+                                      {prog.hasCustomerRisk && (
+                                        <span className="flex items-center gap-0.5 text-[9px] text-red-600">
+                                          <AlertTriangle className="w-3 h-3" /> Customer
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div className="flex flex-col items-end gap-1">
-                                    <span className="text-lg font-bold text-gray-900">{prog.count}</span>
-                                    {prog.hasCustomerRisk && <AlertTriangle className="w-3.5 h-3.5 text-red-500" />}
+                                  <div className="text-right shrink-0">
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-xl font-bold text-yellow-600">{prog.atRiskCount}</span>
+                                      <span className="text-lg font-bold text-red-600">{prog.lateCount}</span>
+                                    </div>
+                                    <p className="text-[9px] text-gray-400">At-Risk / Late</p>
                                   </div>
+                                </div>
+                                <div className="flex items-center justify-between mt-2">
+                                  <span className={`text-[10px] font-medium ${prog.nearestDue <= 0 ? "text-red-600" : prog.nearestDue <= 7 ? "text-yellow-600" : "text-gray-500"}`}>
+                                    {prog.nearestDue <= 0 ? "PAST DUE" : `${prog.nearestDue}d to contract`}
+                                  </span>
                                 </div>
                                 {/* Driver Mix Mini-Bar */}
                                 <div className="mt-2 h-1.5 rounded-full overflow-hidden flex bg-gray-100">
-                                  {total > 0 && (["Supply", "MRB/RI", "Capacity", "Planning"] as DriverCategory[]).map(driver => {
-                                    const pct = (prog.driverMix[driver] / total) * 100
+                                  {driverTotal > 0 && (["Supply", "MRB/RI", "Capacity", "Planning"] as DriverCategory[]).map(driver => {
+                                    const pct = (prog.driverMix[driver] / driverTotal) * 100
                                     if (pct === 0) return null
                                     return <div key={driver} style={{ width: `${pct}%`, backgroundColor: DRIVER_COLORS[driver] }} />
                                   })}
@@ -869,24 +980,30 @@ export function OTDTracking() {
                 </div>
 
                 {/* ZONE B: Why + Who (Center) */}
-                <div className="w-[320px] shrink-0 space-y-4">
+                <div className="w-[340px] shrink-0 space-y-3">
                   {/* At-Risk by Driver Chart */}
                   <Card className="border border-gray-200">
                     <CardHeader className="py-2 px-3">
                       <CardTitle className="text-xs font-semibold text-gray-700">At-Risk by Driver</CardTitle>
-                      <p className="text-[9px] text-gray-400">Count of at-risk deliveries in {pmHorizon}d horizon</p>
+                      <p className="text-[9px] text-gray-400">Count of at-risk/late deliveries in {pmHorizon}d horizon. Click bar to filter.</p>
                     </CardHeader>
                     <CardContent className="px-3 pb-3">
-                      <div className="h-[140px]">
+                      <div className="h-[130px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={pmDriverChartData} layout="vertical" margin={{ left: 0, right: 10 }}>
+                          <BarChart data={pmDriverChartData} layout="vertical" margin={{ left: 0, right: 30 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" horizontal={false} />
                             <XAxis type="number" tick={{ fontSize: 10 }} />
                             <YAxis dataKey="driver" type="category" width={55} tick={{ fontSize: 10 }} />
-                            <Tooltip formatter={(v: number) => [v, "At-Risk"]} />
-                            <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                            <Tooltip formatter={(v: number) => [v, "Deliveries"]} />
+                            <Bar 
+                              dataKey="count" 
+                              radius={[0, 4, 4, 0]} 
+                              cursor="pointer"
+                              onClick={(data) => setPmDriverFilter(pmDriverFilter === data.driver ? null : data.driver)}
+                              label={{ position: 'right', fontSize: 10, fill: '#6B7280' }}
+                            >
                               {pmDriverChartData.map((entry, i) => (
-                                <Cell key={i} fill={entry.fill} />
+                                <Cell key={i} fill={pmDriverFilter === entry.driver ? entry.fill : (pmDriverFilter ? '#D1D5DB' : entry.fill)} />
                               ))}
                             </Bar>
                           </BarChart>
@@ -899,19 +1016,25 @@ export function OTDTracking() {
                   <Card className="border border-gray-200">
                     <CardHeader className="py-2 px-3">
                       <CardTitle className="text-xs font-semibold text-gray-700">At-Risk by Escalation Owner</CardTitle>
-                      <p className="text-[9px] text-gray-400">Who needs to act on these items</p>
+                      <p className="text-[9px] text-gray-400">Owner derived from driver. Click bar to filter call sheet.</p>
                     </CardHeader>
                     <CardContent className="px-3 pb-3">
-                      <div className="h-[140px]">
+                      <div className="h-[130px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={pmOwnerChartData} layout="vertical" margin={{ left: 0, right: 10 }}>
+                          <BarChart data={pmOwnerChartData} layout="vertical" margin={{ left: 0, right: 30 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" horizontal={false} />
                             <XAxis type="number" tick={{ fontSize: 10 }} />
-                            <YAxis dataKey="owner" type="category" width={70} tick={{ fontSize: 10 }} />
-                            <Tooltip formatter={(v: number) => [v, "At-Risk"]} />
-                            <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                            <YAxis dataKey="owner" type="category" width={85} tick={{ fontSize: 9 }} />
+                            <Tooltip formatter={(v: number) => [v, "Deliveries"]} />
+                            <Bar 
+                              dataKey="count" 
+                              radius={[0, 4, 4, 0]} 
+                              cursor="pointer"
+                              onClick={(data) => setPmOwnerFilter(pmOwnerFilter === data.fullOwner ? null : data.fullOwner)}
+                              label={{ position: 'right', fontSize: 10, fill: '#6B7280' }}
+                            >
                               {pmOwnerChartData.map((entry, i) => (
-                                <Cell key={i} fill={entry.fill} />
+                                <Cell key={i} fill={pmOwnerFilter === entry.fullOwner ? entry.fill : (pmOwnerFilter ? '#D1D5DB' : entry.fill)} />
                               ))}
                             </Bar>
                           </BarChart>
@@ -920,110 +1043,162 @@ export function OTDTracking() {
                     </CardContent>
                   </Card>
 
-                  {/* Insight Sentence */}
-                  <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
-                    <p className="text-xs text-blue-800">{pmInsightSentence}</p>
-                  </div>
+                  {/* Top Drivers by Program Table */}
+                  <Card className="border border-gray-200">
+                    <CardHeader className="py-2 px-3">
+                      <CardTitle className="text-xs font-semibold text-gray-700">Top Drivers by Program</CardTitle>
+                      <p className="text-[9px] text-gray-400">Selected scope: {pmSelectedProgram || "All programs"}</p>
+                    </CardHeader>
+                    <CardContent className="px-3 pb-3">
+                      <table className="w-full text-[10px]">
+                        <thead>
+                          <tr className="border-b border-gray-100">
+                            <th className="text-left py-1.5 font-semibold text-gray-600">Program</th>
+                            <th className="text-center py-1.5 font-semibold text-gray-600">Total</th>
+                            <th className="text-left py-1.5 font-semibold text-gray-600">Driver</th>
+                            <th className="text-left py-1.5 font-semibold text-gray-600">Owner</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pmTopDriversByProgram.map(row => (
+                            <tr key={row.program} className="border-b border-gray-50">
+                              <td className="py-1.5 font-medium truncate max-w-[80px]">{row.program}</td>
+                              <td className="py-1.5 text-center font-bold">{row.total}</td>
+                              <td className="py-1.5">
+                                <span style={{ color: DRIVER_COLORS[row.dominantDriver] }}>{row.dominantDriver}</span>
+                              </td>
+                              <td className="py-1.5 text-gray-600 truncate max-w-[70px]">{row.dominantOwner.replace("Production ", "").replace("Supply Chain/", "")}</td>
+                            </tr>
+                          ))}
+                          {pmTopDriversByProgram.length === 0 && (
+                            <tr><td colSpan={4} className="py-3 text-center text-gray-400">No data</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </CardContent>
+                  </Card>
                 </div>
 
-                {/* ZONE C: Escalation Call Sheet (Right) */}
-                <div className="flex-1 min-w-0 space-y-3">
-                  <div className="flex items-center justify-between">
+                {/* ZONE C: Escalation Call Sheet (Right) - Accordion Sections */}
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="flex items-center justify-between mb-1">
                     <h3 className="text-sm font-semibold text-gray-800">Escalation Call Sheet</h3>
-                    <span className="text-xs text-gray-500">{pmAtRiskDeliveries.length} items total</span>
+                    <span className="text-xs text-gray-500">{pmFilteredAtRisk.length} items total</span>
                   </div>
                   
-                  {["Supply Chain/Buyer", "Quality/MRB", "Factory/Operations", "Production Planner", "Customer"].map(owner => {
-                    const ownerItems = pmAtRiskDeliveries.filter(d => d.escalateTo === owner)
-                    if (ownerItems.length === 0) return null
-                    
-                    const isCustomer = owner === "Customer"
-                    const displayName = owner === "Supply Chain/Buyer" ? "Escalate to Buyer" 
-                      : owner === "Quality/MRB" ? "Escalate to Quality/MRB"
-                      : owner === "Factory/Operations" ? "Escalate to Factory/Ops"
-                      : owner === "Production Planner" ? "Escalate to Planner"
-                      : "Customer Escalation Required"
+                  {pmEscalationGroups.groups.map(group => {
+                    const isCustomer = group.owner === "Customer"
+                    const isExpanded = pmExpandedOwners.has(group.owner) || (pmExpandedOwners.size === 0 && group.owner === pmEscalationGroups.largestOwner)
+                    const toggleExpanded = () => {
+                      const newSet = new Set(pmExpandedOwners)
+                      if (pmExpandedOwners.size === 0) {
+                        // First click: initialize with largest, then toggle this one
+                        if (group.owner !== pmEscalationGroups.largestOwner) {
+                          newSet.add(pmEscalationGroups.largestOwner)
+                        }
+                      }
+                      if (newSet.has(group.owner)) newSet.delete(group.owner)
+                      else newSet.add(group.owner)
+                      setPmExpandedOwners(newSet)
+                    }
                     
                     return (
-                      <Card key={owner} className={`border ${isCustomer ? "border-red-200 bg-red-50/30" : "border-gray-200"}`}>
-                        <CardHeader className={`py-2 px-3 ${isCustomer ? "bg-red-50" : "bg-gray-50"}`}>
-                          <div className="flex items-center justify-between">
-                            <CardTitle className={`text-xs font-semibold ${isCustomer ? "text-red-700" : "text-gray-700"}`}>
-                              {displayName}
-                            </CardTitle>
-                            <Badge variant={isCustomer ? "destructive" : "secondary"} className="text-[9px]">
-                              {ownerItems.length}
-                            </Badge>
+                      <Card key={group.owner} className={`border ${isCustomer ? "border-red-200" : "border-gray-200"} overflow-hidden`}>
+                        {/* Accordion Header */}
+                        <button
+                          onClick={toggleExpanded}
+                          className={`w-full flex items-center justify-between p-2.5 text-left transition-colors ${isCustomer ? "bg-red-50 hover:bg-red-100" : "bg-gray-50 hover:bg-gray-100"}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {isExpanded ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />}
+                            <span className={`text-xs font-semibold ${isCustomer ? "text-red-700" : "text-gray-700"}`}>
+                              {group.label}
+                            </span>
                           </div>
-                        </CardHeader>
-                        <CardContent className="p-0">
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-xs">
-                              <thead>
-                                <tr className="border-b border-gray-100 bg-gray-50/50">
-                                  {["Program", "CLIN", "Days", "Contract", "Expected", "Driver", "Status", "Evidence", "Action"].map(h => (
-                                    <th key={h} className="text-left p-2 font-semibold text-gray-600 text-[10px] whitespace-nowrap">{h}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-gray-50">
-                                {ownerItems.slice(0, 5).map(d => {
-                                  // Use deltaDays - negative means past due, positive means ahead
-                                  const delta = d.deltaDays
-                                  const isLate = delta > 0
-                                  const urgency = Math.abs(delta)
-                                  const evidenceTag = d.driver === "Supply" ? `PO ${d.poNumber}` 
-                                    : d.driver === "MRB/RI" ? `MRB-${d.id.slice(-4)}`
-                                    : d.driver === "Capacity" ? "WC constraint"
-                                    : "Plan gap"
-                                  const action = d.driver === "Supply" ? "Expedite" 
-                                    : d.driver === "MRB/RI" ? "Prioritize" 
-                                    : d.driver === "Capacity" ? "Reallocate"
-                                    : "Replan"
-                                  return (
-                                    <tr 
-                                      key={d.id} 
-                                      className="cursor-pointer hover:bg-blue-50 transition-colors"
-                                      onClick={() => handleRowClick(d)}
-                                    >
-                                      <td className="p-2 font-medium">{d.program}</td>
-                                      <td className="p-2 text-gray-600">{d.clin}</td>
-                                      <td className={`p-2 font-medium ${isLate ? "text-red-600" : urgency <= 7 ? "text-yellow-600" : "text-gray-600"}`}>
-                                        {isLate ? `+${delta}d` : `${delta}d`}
-                                      </td>
-                                      <td className="p-2 text-gray-500 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
-                                      <td className="p-2 text-gray-500 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
-                                      <td className="p-2">
-                                        <span className="inline-flex items-center gap-1">
-                                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: DRIVER_COLORS[d.driver] }} />
-                                          <span style={{ color: DRIVER_COLORS[d.driver] }}>{d.driver}</span>
-                                        </span>
-                                      </td>
-                                      <td className="p-2">
-                                        <Badge variant={d.otdStatus === "Late" ? "destructive" : "secondary"} className="text-[9px]">
-                                          {d.otdStatus}
-                                        </Badge>
-                                      </td>
-                                      <td className="p-2 text-gray-500 text-[10px]">{evidenceTag}</td>
-                                      <td className="p-2 text-blue-600 font-medium">{action}</td>
-                                    </tr>
-                                  )
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                          {ownerItems.length > 5 && (
-                            <div className="py-1.5 text-center text-[10px] text-gray-400 border-t border-gray-100">
-                              + {ownerItems.length - 5} more items
+                          <Badge variant={isCustomer ? "destructive" : "secondary"} className="text-[10px]">
+                            {group.items.length}
+                          </Badge>
+                        </button>
+                        
+                        {/* Accordion Content */}
+                        {isExpanded && group.items.length > 0 && (
+                          <div className="border-t border-gray-100">
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-[10px]">
+                                <thead>
+                                  <tr className="bg-gray-50/70 border-b border-gray-100">
+                                    {["Program", "CLIN", "Days", "Contract", "Expected", "Status", "Driver", "Evidence", "Action"].map(h => (
+                                      <th key={h} className="text-left p-1.5 font-semibold text-gray-600 whitespace-nowrap">{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-50">
+                                  {group.items.slice(0, 8).map(d => {
+                                    const evidenceTag = d.driver === "Supply" 
+                                      ? (d.poNumber ? `PO ${d.poNumber}` : "Evidence not available")
+                                      : d.driver === "MRB/RI" 
+                                      ? `MRB-${d.id.slice(-4)}`
+                                      : d.driver === "Capacity" 
+                                      ? "WC constraint"
+                                      : `${d.deltaDays > 0 ? "+" : ""}${d.deltaDays}d gap`
+                                    const action = d.driver === "Supply" ? "Expedite supplier" 
+                                      : d.driver === "MRB/RI" ? "Prioritize disposition" 
+                                      : d.driver === "Capacity" ? "Reallocate resources"
+                                      : "Review/replan"
+                                    return (
+                                      <tr 
+                                        key={d.id} 
+                                        className="cursor-pointer hover:bg-blue-50 transition-colors"
+                                        onClick={() => handleRowClick(d)}
+                                      >
+                                        <td className="p-1.5 font-medium">{d.program}</td>
+                                        <td className="p-1.5 text-gray-600">{d.clin}</td>
+                                        <td className={`p-1.5 font-semibold ${d.daysToContract <= 0 ? "text-red-600" : d.daysToContract <= 7 ? "text-yellow-600" : "text-gray-700"}`}>
+                                          {d.daysToContract}d
+                                        </td>
+                                        <td className="p-1.5 text-gray-500 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
+                                        <td className="p-1.5 text-gray-500 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
+                                        <td className="p-1.5">
+                                          <Badge variant={d.otdStatus === "Late" ? "destructive" : "secondary"} className="text-[8px] px-1">
+                                            {d.otdStatus}
+                                          </Badge>
+                                        </td>
+                                        <td className="p-1.5">
+                                          <span className="inline-flex items-center gap-0.5">
+                                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: DRIVER_COLORS[d.driver] }} />
+                                            <span className="text-gray-700">{d.driver}</span>
+                                          </span>
+                                        </td>
+                                        <td className="p-1.5 text-gray-500">{evidenceTag}</td>
+                                        <td className="p-1.5 text-blue-600 font-medium whitespace-nowrap">{action}</td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
                             </div>
-                          )}
-                        </CardContent>
+                            {group.items.length > 8 && (
+                              <div className="py-1.5 px-3 text-center border-t border-gray-100">
+                                <button className="text-[10px] text-blue-600 hover:underline">
+                                  View all {group.items.length} items
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Empty state when expanded */}
+                        {isExpanded && group.items.length === 0 && (
+                          <div className="p-4 text-center text-[10px] text-gray-400 border-t border-gray-100">
+                            No items for this owner
+                          </div>
+                        )}
                       </Card>
                     )
                   })}
                   
-                  {pmAtRiskDeliveries.length === 0 && (
-                    <div className="text-center py-8 text-gray-400 text-sm">
+                  {pmFilteredAtRisk.length === 0 && (
+                    <div className="text-center py-8 text-gray-400 text-sm border border-dashed border-gray-200 rounded-lg">
                       No at-risk items match the current filters
                     </div>
                   )}
