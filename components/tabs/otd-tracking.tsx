@@ -62,6 +62,7 @@ export function OTDTracking() {
   const [pmSelectedProgram, setPmSelectedProgram] = useState<string | null>(null)
   const [pmDefinitionsOpen, setPmDefinitionsOpen] = useState(false)
   const [pmActiveOwnerTab, setPmActiveOwnerTab] = useState<string>("Supply Chain/Buyer")
+  const [pmShowMissingDates, setPmShowMissingDates] = useState(false)
 
   // Global Filters
   const [selectedSites, setSelectedSites] = useState<string[]>([])
@@ -120,21 +121,53 @@ export function OTDTracking() {
   const topDriver = Object.entries(driverCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as DriverCategory || "Supply"
   const supplyPct = atRiskDeliveries.length > 0 ? Math.round((driverCounts.Supply / atRiskDeliveries.length) * 100) : 0
 
-  // PM Tab: Enrich all deliveries with computed fields
+  // PM Tab: Enrich all deliveries with resolved dates and computed fields
+  // DueDateResolved = ContractDate > PromiseDate > ExpectedDate > ForecastDate > null
+  // ExpectedDateResolved = ExpectedDate > PromiseDate > ForecastDate > null
   const pmEnrichedDeliveries = useMemo(() => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const todayMs = today.getTime()
     
     return allDeliveries.map(d => {
-      const daysToContract = Math.floor((d.contractDate.getTime() - todayMs) / (24 * 60 * 60 * 1000))
-      const expectedExceedsContract = d.expectedDate > d.contractDate
-      const customerCommsRequired = d.otdStatus === "Late" || (daysToContract <= 7 && expectedExceedsContract)
+      // Resolve DueDate with fallback chain
+      const dueDateResolved = d.contractDate || d.promiseDate || d.expectedDate || d.forecastDate || null
+      // Resolve ExpectedDate with fallback chain
+      const expectedDateResolved = d.expectedDate || d.promiseDate || d.forecastDate || null
+      
+      // Days to due date (null if no resolved date)
+      const daysToDue = dueDateResolved 
+        ? Math.floor((dueDateResolved.getTime() - todayMs) / (24 * 60 * 60 * 1000))
+        : null
+      
+      // At-Risk: DueDate in future AND ExpectedDateResolved > DueDateResolved
+      const isAtRisk = dueDateResolved && expectedDateResolved && daysToDue !== null && daysToDue >= 0 
+        && expectedDateResolved > dueDateResolved
+      
+      // Late: DueDate < Today AND not delivered (actualDate is null)
+      const isLate = dueDateResolved && daysToDue !== null && daysToDue < 0 && !d.actualDate
+      
+      // Customer Comms Required: Late OR (DaysToDue <= 7 AND ExpectedDateResolved > DueDateResolved)
+      const customerCommsRequired = isLate || (daysToDue !== null && daysToDue <= 7 && expectedDateResolved && dueDateResolved && expectedDateResolved > dueDateResolved)
+      
+      // Escalation owner derived from driver
       const escalationOwner = d.driver === "Supply" ? "Supply Chain/Buyer"
         : d.driver === "MRB/RI" ? "Quality/MRB"
         : d.driver === "Capacity" ? "Factory/Operations"
         : "Production Planner"
-      return { ...d, daysToContract, customerCommsRequired, escalationOwner }
+      
+      return { 
+        ...d, 
+        dueDateResolved, 
+        expectedDateResolved,
+        daysToDue, 
+        isAtRisk,
+        isLate,
+        customerCommsRequired, 
+        escalationOwner,
+        // Keep legacy field for compatibility
+        daysToContract: daysToDue ?? 999
+      }
     })
   }, [allDeliveries])
 
@@ -152,75 +185,115 @@ export function OTDTracking() {
     return false
   }, [pmSelectedManager, pmSelectedPrograms, pmSelectedProgram, programManagerMapping])
 
-  // PM: Data Sanity counts (always computed, ignoring some filters for visibility)
+  // PM: Data Sanity counts using DISTINCT delivery IDs and resolved dates
   const pmDataSanity = useMemo(() => {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const todayMs = today.getTime()
+    // De-duplicate by delivery ID to ensure stable grain
+    const uniqueDeliveries = new Map<string, typeof pmEnrichedDeliveries[0]>()
+    pmEnrichedDeliveries.forEach(d => {
+      if (!uniqueDeliveries.has(d.id)) uniqueDeliveries.set(d.id, d)
+    })
+    const allUnique = Array.from(uniqueDeliveries.values())
     
-    // Total for selected program (ignoring PM filter)
+    // Total deliveries in dataset (all programs)
+    const totalInDataset = allUnique.length
+    
+    // Selected program filter (if any)
     const selectedProg = pmSelectedProgram || (pmSelectedPrograms.length > 0 ? pmSelectedPrograms[0] : null)
-    const totalForProgram = selectedProg 
-      ? pmEnrichedDeliveries.filter(d => d.program === selectedProg).length 
-      : pmEnrichedDeliveries.length
+    const forSelectedProgram = selectedProg 
+      ? allUnique.filter(d => d.program === selectedProg)
+      : allUnique
+    const totalForProgram = forSelectedProgram.length
     
-    // After PM filter (portfolio mapping)
-    let afterPmFilter = pmEnrichedDeliveries
-    if (pmSelectedManager !== "all") {
+    // After PM portfolio filter (only if no explicit program selection)
+    let afterPmFilter: typeof allUnique
+    if (selectedProg) {
+      // Program selection overrides PM filter
+      afterPmFilter = forSelectedProgram
+    } else if (pmSelectedManager !== "all") {
       const pmPrograms = programManagerMapping[pmSelectedManager] || []
-      afterPmFilter = pmEnrichedDeliveries.filter(d => pmPrograms.includes(d.program))
+      afterPmFilter = allUnique.filter(d => pmPrograms.includes(d.program))
+    } else {
+      afterPmFilter = allUnique
     }
     const deliveriesAfterPmFilter = afterPmFilter.length
     
-    // Upcoming due in horizon
-    const upcomingDueInHorizon = afterPmFilter.filter(d => d.daysToContract >= 0 && d.daysToContract <= pmHorizon).length
+    // Null date diagnostics
+    const missingDueDate = afterPmFilter.filter(d => d.dueDateResolved === null).length
+    const missingExpectedDate = afterPmFilter.filter(d => d.expectedDateResolved === null).length
+    const missingDueDatePct = afterPmFilter.length > 0 ? (missingDueDate / afterPmFilter.length) * 100 : 0
+    const missingExpectedDatePct = afterPmFilter.length > 0 ? (missingExpectedDate / afterPmFilter.length) * 100 : 0
     
-    // Backlog late in window
-    const backlogLateInWindow = afterPmFilter.filter(d => d.daysToContract >= -pmHorizon && d.daysToContract < 0).length
+    // Deliveries with valid due dates for time-based calculations
+    const withValidDueDate = afterPmFilter.filter(d => d.daysToDue !== null)
     
-    // At-risk in horizon (upcoming)
-    const atRiskInHorizon = afterPmFilter.filter(d => 
-      d.daysToContract >= 0 && d.daysToContract <= pmHorizon && (d.otdStatus === "At-Risk" || d.otdStatus === "Late")
+    // Upcoming: DueDateResolved in [Today, Today+Horizon]
+    const upcomingDueInHorizon = withValidDueDate.filter(d => 
+      d.daysToDue! >= 0 && d.daysToDue! <= pmHorizon
     ).length
     
-    // Late in window (backlog)
-    const lateInWindow = afterPmFilter.filter(d => 
-      d.daysToContract >= -pmHorizon && d.daysToContract < 0 && d.otdStatus === "Late"
+    // Backlog: DueDateResolved in [Today-Horizon, Today)
+    const backlogInWindow = withValidDueDate.filter(d => 
+      d.daysToDue! >= -pmHorizon && d.daysToDue! < 0
     ).length
     
-    return { totalForProgram, deliveriesAfterPmFilter, upcomingDueInHorizon, backlogLateInWindow, atRiskInHorizon, lateInWindow }
+    // At-Risk: In upcoming horizon AND isAtRisk flag
+    const atRiskInHorizon = withValidDueDate.filter(d => 
+      d.daysToDue! >= 0 && d.daysToDue! <= pmHorizon && d.isAtRisk
+    ).length
+    
+    // Late: DueDateResolved < Today (past due)
+    const lateCount = withValidDueDate.filter(d => d.isLate).length
+    
+    return { 
+      totalInDataset,
+      totalForProgram, 
+      deliveriesAfterPmFilter, 
+      upcomingDueInHorizon, 
+      backlogInWindow, 
+      atRiskInHorizon, 
+      lateCount,
+      missingDueDate,
+      missingExpectedDate,
+      missingDueDatePct,
+      missingExpectedDatePct
+    }
   }, [pmEnrichedDeliveries, pmSelectedManager, pmSelectedPrograms, pmSelectedProgram, pmHorizon, programManagerMapping])
 
   // PM Tab: Filtered deliveries - Program selection OVERRIDES PM mapping
+  // Uses DueDateResolved for time scoping
   const pmFilteredDeliveries = useMemo(() => {
-    let result = pmEnrichedDeliveries
+    // De-duplicate by ID first
+    const uniqueMap = new Map<string, typeof pmEnrichedDeliveries[0]>()
+    pmEnrichedDeliveries.forEach(d => {
+      if (!uniqueMap.has(d.id)) uniqueMap.set(d.id, d)
+    })
+    let result = Array.from(uniqueMap.values())
     
     // If a specific program is selected, it OVERRIDES PM portfolio filter
     const hasExplicitProgramSelection = pmSelectedProgram || pmSelectedPrograms.length > 0
     
     if (hasExplicitProgramSelection) {
-      // Program selection takes priority - do NOT filter by PM portfolio
       if (pmSelectedProgram) {
         result = result.filter(d => d.program === pmSelectedProgram)
       } else if (pmSelectedPrograms.length > 0) {
         result = result.filter(d => pmSelectedPrograms.includes(d.program))
       }
     } else {
-      // No explicit program selection - apply PM portfolio filter
       if (pmSelectedManager !== "all") {
         const pmPrograms = programManagerMapping[pmSelectedManager] || []
         result = result.filter(d => pmPrograms.includes(d.program))
       }
     }
     
-    // Time scoping based on Mode
+    // Time scoping based on Mode using DueDateResolved
+    // Only include records with valid due dates
     if (pmMode === "upcoming") {
-      result = result.filter(d => d.daysToContract >= 0 && d.daysToContract <= pmHorizon)
+      result = result.filter(d => d.daysToDue !== null && d.daysToDue >= 0 && d.daysToDue <= pmHorizon)
     } else {
       if (pmIncludeAllBacklog) {
-        result = result.filter(d => d.daysToContract < 0)
+        result = result.filter(d => d.daysToDue !== null && d.daysToDue < 0)
       } else {
-        result = result.filter(d => d.daysToContract >= -pmHorizon && d.daysToContract < 0)
+        result = result.filter(d => d.daysToDue !== null && d.daysToDue >= -pmHorizon && d.daysToDue < 0)
       }
     }
     
@@ -232,14 +305,14 @@ export function OTDTracking() {
     return result
   }, [pmEnrichedDeliveries, pmSelectedManager, pmSelectedPrograms, pmHorizon, pmMode, pmIncludeAllBacklog, pmSelectedProgram, pmCustomerCommsOnly, programManagerMapping])
 
-  // PM: At-Risk and Late deliveries
+  // PM: At-Risk and Late deliveries using resolved date logic
   const pmAtRiskDeliveries = useMemo(() => {
-    return pmFilteredDeliveries.filter(d => d.otdStatus === "At-Risk" || d.otdStatus === "Late")
-      .sort((a, b) => a.daysToContract - b.daysToContract)
+    return pmFilteredDeliveries.filter(d => d.isAtRisk || d.isLate)
+      .sort((a, b) => (a.daysToDue ?? 999) - (b.daysToDue ?? 999))
   }, [pmFilteredDeliveries])
   
-  const pmLateDeliveries = useMemo(() => pmAtRiskDeliveries.filter(d => d.otdStatus === "Late"), [pmAtRiskDeliveries])
-  const pmAtRiskOnlyDeliveries = useMemo(() => pmAtRiskDeliveries.filter(d => d.otdStatus === "At-Risk"), [pmAtRiskDeliveries])
+  const pmLateDeliveries = useMemo(() => pmAtRiskDeliveries.filter(d => d.isLate), [pmAtRiskDeliveries])
+  const pmAtRiskOnlyDeliveries = useMemo(() => pmAtRiskDeliveries.filter(d => d.isAtRisk && !d.isLate), [pmAtRiskDeliveries])
 
   // PM: Programs available based on selected manager
   const pmAvailablePrograms = useMemo(() => {
@@ -272,11 +345,13 @@ export function OTDTracking() {
         ownerCounts: { "Supply Chain/Buyer": 0, "Quality/MRB": 0, "Factory/Operations": 0, "Production Planner": 0 }
       }
       existing.dueCount++
-      if (d.otdStatus === "Late") existing.lateCount++
-      else if (d.otdStatus === "At-Risk") existing.atRiskCount++
+      // Use computed isLate/isAtRisk flags instead of otdStatus
+      if (d.isLate) existing.lateCount++
+      else if (d.isAtRisk) existing.atRiskCount++
       existing.driverCounts[d.driver]++
       existing.ownerCounts[d.escalationOwner]++
-      if (d.daysToContract < existing.nearestDue) existing.nearestDue = d.daysToContract
+      const daysToDue = d.daysToDue ?? 999
+      if (daysToDue < existing.nearestDue) existing.nearestDue = daysToDue
       programMap.set(d.program, existing)
     })
     
@@ -297,11 +372,11 @@ export function OTDTracking() {
       .sort((a, b) => (b.atRiskCount + b.lateCount) - (a.atRiskCount + a.lateCount) || a.nearestDue - b.nearestDue)
   }, [pmFilteredDeliveries])
 
-  // PM: KPI calculations with proper zero-handling
+  // PM: KPI calculations with proper zero-handling using resolved dates
   const pmKpis = useMemo(() => {
     const dueInHorizon = pmFilteredDeliveries.length
-    const atRiskUpcoming = pmAtRiskOnlyDeliveries.length
-    const lateBacklog = pmLateDeliveries.length
+    const atRiskCount = pmAtRiskOnlyDeliveries.length
+    const lateCount = pmLateDeliveries.length
     const totalAtRiskAndLate = pmAtRiskDeliveries.length
     
     const driverCounts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
@@ -311,7 +386,6 @@ export function OTDTracking() {
       programCounts.set(d.program, (programCounts.get(d.program) || 0) + 1)
     })
     
-    // If no at-risk/late items, show "—" instead of misleading driver
     const sortedDrivers = (Object.entries(driverCounts) as [DriverCategory, number][])
       .sort((a, b) => b[1] - a[1])
     const topDriver = totalAtRiskAndLate > 0 ? sortedDrivers[0]?.[0] : null
@@ -321,7 +395,7 @@ export function OTDTracking() {
     const topProgram = totalAtRiskAndLate > 0 ? sortedPrograms[0]?.[0] : null
     const topProgramCount = totalAtRiskAndLate > 0 ? sortedPrograms[0]?.[1] : 0
     
-    return { dueInHorizon, atRiskUpcoming, lateBacklog, totalAtRiskAndLate, topDriver, topDriverCount, topProgram, topProgramCount }
+    return { dueInHorizon, atRiskCount, lateCount, totalAtRiskAndLate, topDriver, topDriverCount, topProgram, topProgramCount }
   }, [pmFilteredDeliveries, pmAtRiskDeliveries, pmAtRiskOnlyDeliveries, pmLateDeliveries])
 
   // PM: Escalation groups by owner (4 internal owners only, no Customer bucket)
@@ -1001,11 +1075,14 @@ export function OTDTracking() {
                   
                   {pmDefinitionsOpen && (
                     <div className="mt-4 p-4 bg-white rounded border border-gray-200 text-sm text-gray-600 space-y-2">
-                      <p><strong>At-Risk:</strong> Delivery where Expected Date {'>'} Contract Date OR flagged by system rules.</p>
+                      <p><strong>DueDateResolved:</strong> ContractDate → PromiseDate → ExpectedDate → ForecastDate (first non-null value used).</p>
+                      <p><strong>ExpectedDateResolved:</strong> ExpectedDate → PromiseDate → ForecastDate (first non-null value used).</p>
+                      <p><strong>At-Risk:</strong> DueDateResolved in future AND ExpectedDateResolved {'>'} DueDateResolved.</p>
+                      <p><strong>Late:</strong> DueDateResolved {'<'} Today AND not yet delivered (actualDate is null).</p>
                       <p><strong>Driver:</strong> Supply = PO late/short; MRB/RI = material in inspection/MRB queue; Capacity = workcenter constraint; Planning = plan date mismatch.</p>
                       <p><strong>Escalation Owner:</strong> Supply → Supply Chain/Buyer; MRB/RI → Quality/MRB; Capacity → Factory/Operations; Planning → Production Planner.</p>
-                      <p><strong>Customer Comms Required:</strong> Status = Late OR (Days to Contract ≤ 7 AND Expected {'>'} Contract).</p>
-                      <p><strong>Days to Contract:</strong> Calendar days from today to contractual delivery date. Negative = past due.</p>
+                      <p><strong>Customer Comms Required:</strong> Late OR (DaysToDue ≤ 7 AND ExpectedDateResolved {'>'} DueDateResolved).</p>
+                      <p><strong>Days to Due:</strong> Calendar days from today to DueDateResolved. Negative = past due.</p>
                     </div>
                   )}
                 </CardContent>
@@ -1032,39 +1109,72 @@ export function OTDTracking() {
                 </div>
               )}
 
-              {/* DATA SANITY PANEL - Always visible */}
+              {/* DATA SANITY PANEL - Always visible with distinct counts */}
               <Card className="border border-gray-200 bg-gray-50">
                 <CardContent className="py-3 px-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Data Sanity Check</span>
-                    <div className="flex items-center gap-6 text-sm">
-                      <span className="text-gray-600">
-                        <strong className="text-gray-900">{pmDataSanity.totalForProgram}</strong> total for {pmSelectedProgram || pmSelectedPrograms[0] || "all programs"}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Data Sanity Check (Distinct Deliveries)</span>
+                      <div className="flex items-center gap-4 text-sm">
+                        <span className="text-gray-600">
+                          <strong className="text-gray-900">{pmDataSanity.totalForProgram}</strong> total for {pmSelectedProgram || pmSelectedPrograms[0] || "all programs"}
+                        </span>
+                        <span className="text-gray-400">|</span>
+                        <span className="text-gray-600">
+                          <strong className="text-gray-900">{pmDataSanity.deliveriesAfterPmFilter}</strong> after PM filter
+                        </span>
+                        <span className="text-gray-400">|</span>
+                        <span className="text-gray-600">
+                          <strong className="text-blue-600">{pmDataSanity.upcomingDueInHorizon}</strong> upcoming
+                        </span>
+                        <span className="text-gray-400">|</span>
+                        <span className="text-gray-600">
+                          <strong className="text-orange-600">{pmDataSanity.backlogInWindow}</strong> backlog
+                        </span>
+                        <span className="text-gray-400">|</span>
+                        <span className="text-gray-600">
+                          <strong className="text-yellow-600">{pmDataSanity.atRiskInHorizon}</strong> at-risk
+                        </span>
+                        <span className="text-gray-400">|</span>
+                        <span className="text-gray-600">
+                          <strong className="text-red-600">{pmDataSanity.lateCount}</strong> late
+                        </span>
+                      </div>
+                    </div>
+                    {/* Null Date Diagnostics */}
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                      <span>
+                        Missing DueDateResolved: <strong className={pmDataSanity.missingDueDatePct > 10 ? "text-red-600" : "text-gray-700"}>{pmDataSanity.missingDueDatePct.toFixed(1)}%</strong> ({pmDataSanity.missingDueDate})
                       </span>
-                      <span className="text-gray-400">|</span>
-                      <span className="text-gray-600">
-                        <strong className="text-gray-900">{pmDataSanity.deliveriesAfterPmFilter}</strong> after PM filter
-                      </span>
-                      <span className="text-gray-400">|</span>
-                      <span className="text-gray-600">
-                        <strong className="text-blue-600">{pmDataSanity.upcomingDueInHorizon}</strong> upcoming in {pmHorizon}d
-                      </span>
-                      <span className="text-gray-400">|</span>
-                      <span className="text-gray-600">
-                        <strong className="text-red-600">{pmDataSanity.backlogLateInWindow}</strong> backlog in {pmHorizon}d
-                      </span>
-                      <span className="text-gray-400">|</span>
-                      <span className="text-gray-600">
-                        <strong className="text-yellow-600">{pmDataSanity.atRiskInHorizon}</strong> at-risk
-                      </span>
-                      <span className="text-gray-400">|</span>
-                      <span className="text-gray-600">
-                        <strong className="text-red-600">{pmDataSanity.lateInWindow}</strong> late
+                      <span className="text-gray-300">|</span>
+                      <span>
+                        Missing ExpectedDateResolved: <strong className={pmDataSanity.missingExpectedDatePct > 10 ? "text-red-600" : "text-gray-700"}>{pmDataSanity.missingExpectedDatePct.toFixed(1)}%</strong> ({pmDataSanity.missingExpectedDate})
                       </span>
                     </div>
                   </div>
                 </CardContent>
               </Card>
+              
+              {/* WARNING: Missing Due Dates */}
+              {pmDataSanity.missingDueDatePct > 10 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-red-800">
+                      {pmDataSanity.missingDueDatePct.toFixed(0)}% of deliveries are missing due dates.
+                    </p>
+                    <p className="text-sm text-red-700">
+                      Missing due dates prevent upcoming/backlog calculations. Check DueDateResolved mapping (ContractDate → PromiseDate → ExpectedDate → ForecastDate).
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => setPmShowMissingDates(true)}
+                    className="px-3 py-1.5 text-sm font-medium bg-red-200 hover:bg-red-300 text-red-800 rounded transition-colors"
+                  >
+                    Show Missing Date Records
+                  </button>
+                </div>
+              )}
 
               {/* KPI STRIP - Big numbers with proper zero handling */}
               <div className="grid grid-cols-5 gap-4">
@@ -1079,7 +1189,7 @@ export function OTDTracking() {
                     <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
                       {pmMode === "upcoming" ? "At-Risk (Upcoming)" : "At-Risk (Backlog)"}
                     </p>
-                    <p className="text-3xl font-bold mt-1 text-yellow-600">{pmKpis.atRiskUpcoming}</p>
+                    <p className="text-3xl font-bold mt-1 text-yellow-600">{pmKpis.atRiskCount}</p>
                   </CardContent>
                 </Card>
                 <Card className="border border-gray-200">
@@ -1087,7 +1197,7 @@ export function OTDTracking() {
                     <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
                       {pmMode === "upcoming" ? "Late (in scope)" : "Late (Backlog)"}
                     </p>
-                    <p className="text-3xl font-bold mt-1 text-red-600">{pmKpis.lateBacklog}</p>
+                    <p className="text-3xl font-bold mt-1 text-red-600">{pmKpis.lateCount}</p>
                   </CardContent>
                 </Card>
                 <Card className="border border-gray-200">
@@ -1116,35 +1226,66 @@ export function OTDTracking() {
                 </Card>
               </div>
               
-              {/* Empty State with Actions - when no deliveries in upcoming mode */}
-              {pmMode === "upcoming" && pmFilteredDeliveries.length === 0 && (
+              {/* Empty State with Actions - context-aware messaging */}
+              {pmFilteredDeliveries.length === 0 && pmDataSanity.totalForProgram > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
-                  <p className="text-lg font-semibold text-blue-800 mb-2">
-                    No deliveries due in the next {pmHorizon} days for this scope.
-                  </p>
-                  <p className="text-sm text-blue-600 mb-4">Try one of these options:</p>
-                  <div className="flex items-center justify-center gap-4">
-                    <button 
-                      onClick={() => setPmMode("backlog")}
-                      className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
-                    >
-                      Switch to Backlog Mode
-                    </button>
-                    <button 
-                      onClick={() => setPmHorizon(90)}
-                      className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
-                    >
-                      Increase Horizon to 90d
-                    </button>
-                    {pmSelectedManager !== "all" && (
+                  {/* Check if it's a missing date issue */}
+                  {pmDataSanity.missingDueDatePct > 50 ? (
+                    <>
+                      <p className="text-lg font-semibold text-blue-800 mb-2">
+                        Records exist but due dates are missing or out of range.
+                      </p>
+                      <p className="text-sm text-blue-600 mb-4">
+                        {pmDataSanity.missingDueDate} of {pmDataSanity.totalForProgram} deliveries have no DueDateResolved. Check the date mapping (ContractDate → PromiseDate → ExpectedDate → ForecastDate).
+                      </p>
                       <button 
-                        onClick={() => setPmSelectedManager("all")}
-                        className="px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 transition-colors"
+                        onClick={() => setPmShowMissingDates(true)}
+                        className="px-4 py-2 bg-orange-600 text-white font-medium rounded-lg hover:bg-orange-700 transition-colors"
                       >
-                        Switch to All Managers
+                        Show Records with Missing Due Dates
                       </button>
-                    )}
-                  </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-lg font-semibold text-blue-800 mb-2">
+                        No deliveries due in the {pmMode === "upcoming" ? `next ${pmHorizon} days` : `past ${pmHorizon} days`} for this scope.
+                      </p>
+                      <p className="text-sm text-blue-600 mb-4">
+                        {pmDataSanity.totalForProgram} total records exist. {pmDataSanity.upcomingDueInHorizon} upcoming, {pmDataSanity.backlogInWindow} backlog.
+                      </p>
+                      <div className="flex items-center justify-center gap-4">
+                        {pmMode === "upcoming" ? (
+                          <button 
+                            onClick={() => setPmMode("backlog")}
+                            className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
+                          >
+                            Switch to Backlog Mode
+                          </button>
+                        ) : (
+                          <button 
+                            onClick={() => setPmMode("upcoming")}
+                            className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                          >
+                            Switch to Upcoming Mode
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => setPmHorizon(90)}
+                          className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                          Increase Horizon to 90d
+                        </button>
+                        {pmSelectedManager !== "all" && (
+                          <button 
+                            onClick={() => setPmSelectedManager("all")}
+                            className="px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 transition-colors"
+                          >
+                            Switch to All Managers
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -1268,8 +1409,8 @@ export function OTDTracking() {
                                 >
                                   <td className="p-3 text-sm font-semibold">{d.program}</td>
                                   <td className="p-3 text-sm text-gray-700">{d.clin}</td>
-                                  <td className={`p-3 text-sm font-bold ${d.daysToContract <= 0 ? "text-red-600" : d.daysToContract <= 7 ? "text-yellow-600" : "text-gray-700"}`}>
-                                    {d.daysToContract}d
+                                  <td className={`p-3 text-sm font-bold ${(d.daysToDue ?? 999) <= 0 ? "text-red-600" : (d.daysToDue ?? 999) <= 7 ? "text-yellow-600" : "text-gray-700"}`}>
+                                    {d.daysToDue ?? "—"}d
                                   </td>
                                   <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
                                   <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
@@ -1384,6 +1525,72 @@ export function OTDTracking() {
                     </div>
                   </CardContent>
                 </Card>
+              </div>
+            </div>
+          )}
+          
+          {/* PM: Missing Dates Modal */}
+          {pmShowMissingDates && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setPmShowMissingDates(false)}>
+              <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                  <h3 className="text-lg font-bold text-gray-900">Deliveries with Missing Due Dates</h3>
+                  <button onClick={() => setPmShowMissingDates(false)} className="p-1 hover:bg-gray-100 rounded">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-4 overflow-auto max-h-[calc(80vh-120px)]">
+                  <p className="text-sm text-gray-600 mb-4">
+                    These {pmEnrichedDeliveries.filter(d => d.dueDateResolved === null).length} deliveries have no DueDateResolved (ContractDate, PromiseDate, ExpectedDate, and ForecastDate are all null/missing).
+                  </p>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200">
+                        <th className="text-left p-2 font-semibold">ID</th>
+                        <th className="text-left p-2 font-semibold">Program</th>
+                        <th className="text-left p-2 font-semibold">CLIN</th>
+                        <th className="text-left p-2 font-semibold">Delivery #</th>
+                        <th className="text-left p-2 font-semibold">ContractDate</th>
+                        <th className="text-left p-2 font-semibold">PromiseDate</th>
+                        <th className="text-left p-2 font-semibold">ExpectedDate</th>
+                        <th className="text-left p-2 font-semibold">ForecastDate</th>
+                        <th className="text-left p-2 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {pmEnrichedDeliveries.filter(d => d.dueDateResolved === null).slice(0, 50).map(d => (
+                        <tr key={d.id} className="hover:bg-gray-50">
+                          <td className="p-2 text-gray-600 font-mono text-xs">{d.id}</td>
+                          <td className="p-2 font-medium">{d.program}</td>
+                          <td className="p-2">{d.clin}</td>
+                          <td className="p-2">{d.deliveryNumber}</td>
+                          <td className="p-2 text-gray-500">{d.contractDate ? fmtDate(d.contractDate) : <span className="text-red-500">null</span>}</td>
+                          <td className="p-2 text-gray-500">{d.promiseDate ? fmtDate(d.promiseDate) : <span className="text-red-500">null</span>}</td>
+                          <td className="p-2 text-gray-500">{d.expectedDate ? fmtDate(d.expectedDate) : <span className="text-red-500">null</span>}</td>
+                          <td className="p-2 text-gray-500">{d.forecastDate ? fmtDate(d.forecastDate) : <span className="text-red-500">null</span>}</td>
+                          <td className="p-2">
+                            <Badge variant={d.otdStatus === "Late" ? "destructive" : "secondary"} className="text-xs">
+                              {d.otdStatus}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {pmEnrichedDeliveries.filter(d => d.dueDateResolved === null).length > 50 && (
+                    <p className="mt-3 text-sm text-gray-500 text-center">
+                      Showing first 50 of {pmEnrichedDeliveries.filter(d => d.dueDateResolved === null).length} records with missing due dates.
+                    </p>
+                  )}
+                </div>
+                <div className="p-4 border-t border-gray-200 flex justify-end">
+                  <button 
+                    onClick={() => setPmShowMissingDates(false)}
+                    className="px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           )}
