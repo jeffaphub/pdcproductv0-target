@@ -23,9 +23,43 @@ import {
   type DriverCategory,
   type TimeBucket,
   type MRBStep,
+  type CapacityReason,
+  type MRBReason,
+  type PlanningReason,
+  type Workcenter,
 } from "@/lib/otd-tracking-data"
 
 type OTDSubTab = "overview" | "program-manager" | "planner" | "supply-chain" | "quality" | "siop" | "supplier-otd"
+
+// Color palettes for deep-dive analysis charts
+const CAPACITY_REASON_COLORS: Record<string, string> = {
+  "Workcenter Bottleneck": "#EF4444", // red
+  "Test Constraint": "#F97316", // orange
+  "Machine Downtime": "#EAB308", // yellow
+  "Staffing Shortage": "#22C55E", // green
+  "Setup/Changeover": "#06B6D4", // cyan
+  "Rework/Yield Loss": "#8B5CF6", // violet
+  "Unknown Capacity": "#6B7280", // gray
+}
+
+const MRB_REASON_COLORS: Record<string, string> = {
+  "RI Backlog": "#EF4444",
+  "MRB Review Pending": "#F97316",
+  "Disposition Pending": "#EAB308",
+  "Rework Required": "#22C55E",
+  "Retest/Re-inspection": "#06B6D4",
+  "Waiting on Engineering": "#3B82F6",
+  "Waiting on Supplier": "#8B5CF6",
+  "Unknown MRB": "#6B7280",
+}
+
+const PLANNING_REASON_COLORS: Record<string, string> = {
+  "Plan Date Behind Contract": "#EF4444",
+  "Forecast Mismatch": "#F97316",
+  "Contract Change Not Reflected": "#EAB308",
+  "Sequencing/Priority Issue": "#3B82F6",
+  "Unknown Planning": "#6B7280",
+}
 
 const DRIVER_COLORS: Record<DriverCategory, string> = {
   Supply: "#3B82F6",
@@ -460,7 +494,165 @@ export function OTDTracking() {
       fill: "#3B82F6",
     }))
   }, [pmAtRiskDeliveries])
-
+  
+  // ===== DEEP DIVE DATA: Factory/Ops (Capacity) =====
+  const factoryOpsDeliveries = useMemo(() => {
+    return pmAtRiskDeliveries.filter(d => d.escalationOwner === "Factory/Operations")
+  }, [pmAtRiskDeliveries])
+  
+  // Calculate Slip Days = max(0, ExpectedDate - ContractDate) in days
+  const factoryOpsWithSlip = useMemo(() => {
+    return factoryOpsDeliveries.map(d => {
+      const slipDays = Math.max(0, Math.floor((d.expectedDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)))
+      return { ...d, slipDays }
+    })
+  }, [factoryOpsDeliveries])
+  
+  // Stacked bar: OTD Slip Impact by Workcenter
+  const factoryWorkcenterChartData = useMemo(() => {
+    const wcMap = new Map<string, Record<string, number>>()
+    factoryOpsWithSlip.forEach(d => {
+      const wc = d.workcenter || "Unknown"
+      const reason = d.capacityReason || "Unknown Capacity"
+      if (!wcMap.has(wc)) wcMap.set(wc, {})
+      const reasons = wcMap.get(wc)!
+      reasons[reason] = (reasons[reason] || 0) + d.slipDays
+    })
+    // Convert to array sorted by total slip days
+    const data = Array.from(wcMap.entries()).map(([wc, reasons]) => {
+      const total = Object.values(reasons).reduce((s, v) => s + v, 0)
+      return { workcenter: wc, ...reasons, total }
+    }).sort((a, b) => b.total - a.total).slice(0, 15)
+    return data
+  }, [factoryOpsWithSlip])
+  
+  // Get unique capacity reasons for chart legend
+  const factoryCapacityReasons = useMemo(() => {
+    const reasons = new Set<string>()
+    factoryOpsWithSlip.forEach(d => reasons.add(d.capacityReason || "Unknown Capacity"))
+    return Array.from(reasons)
+  }, [factoryOpsWithSlip])
+  
+  // Pareto: Top Capacity Loss Reasons
+  const factoryParetoData = useMemo(() => {
+    const reasonMap = new Map<string, number>()
+    factoryOpsWithSlip.forEach(d => {
+      const reason = d.capacityReason || "Unknown Capacity"
+      reasonMap.set(reason, (reasonMap.get(reason) || 0) + d.slipDays)
+    })
+    const sorted = Array.from(reasonMap.entries()).sort((a, b) => b[1] - a[1])
+    const total = sorted.reduce((s, [, v]) => s + v, 0)
+    let cumulative = 0
+    return sorted.map(([reason, slipDays]) => {
+      cumulative += slipDays
+      return { reason, slipDays, cumulativePct: total > 0 ? Math.round((cumulative / total) * 100) : 0 }
+    })
+  }, [factoryOpsWithSlip])
+  
+  // ===== DEEP DIVE DATA: Quality/MRB =====
+  const qualityMrbDeliveries = useMemo(() => {
+    return pmAtRiskDeliveries.filter(d => d.escalationOwner === "Quality/MRB")
+  }, [pmAtRiskDeliveries])
+  
+  const qualityMrbWithSlip = useMemo(() => {
+    return qualityMrbDeliveries.map(d => {
+      const slipDays = Math.max(0, Math.floor((d.expectedDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)))
+      return { ...d, slipDays }
+    })
+  }, [qualityMrbDeliveries])
+  
+  // Stacked bar: OTD Slip Impact by MRB Step
+  const mrbStepChartData = useMemo(() => {
+    const stepMap = new Map<string, Record<string, number>>()
+    qualityMrbWithSlip.forEach(d => {
+      const step = d.mrbStep || "Unknown"
+      const reason = d.mrbReason || "Unknown MRB"
+      if (!stepMap.has(step)) stepMap.set(step, {})
+      const reasons = stepMap.get(step)!
+      reasons[reason] = (reasons[reason] || 0) + d.slipDays
+    })
+    const data = Array.from(stepMap.entries()).map(([step, reasons]) => {
+      const total = Object.values(reasons).reduce((s, v) => s + v, 0)
+      return { step, ...reasons, total }
+    }).sort((a, b) => b.total - a.total)
+    return data
+  }, [qualityMrbWithSlip])
+  
+  // Get unique MRB reasons for chart legend
+  const mrbReasonsList = useMemo(() => {
+    const reasons = new Set<string>()
+    qualityMrbWithSlip.forEach(d => reasons.add(d.mrbReason || "Unknown MRB"))
+    return Array.from(reasons)
+  }, [qualityMrbWithSlip])
+  
+  // Pareto: Top MRB Blockers
+  const mrbParetoData = useMemo(() => {
+    const reasonMap = new Map<string, number>()
+    qualityMrbWithSlip.forEach(d => {
+      const reason = d.mrbReason || "Unknown MRB"
+      reasonMap.set(reason, (reasonMap.get(reason) || 0) + d.slipDays)
+    })
+    const sorted = Array.from(reasonMap.entries()).sort((a, b) => b[1] - a[1])
+    const total = sorted.reduce((s, [, v]) => s + v, 0)
+    let cumulative = 0
+    return sorted.map(([reason, slipDays]) => {
+      cumulative += slipDays
+      return { reason, slipDays, cumulativePct: total > 0 ? Math.round((cumulative / total) * 100) : 0 }
+    })
+  }, [qualityMrbWithSlip])
+  
+  // ===== DEEP DIVE DATA: Planning =====
+  const planningDeliveries = useMemo(() => {
+    return pmAtRiskDeliveries.filter(d => d.escalationOwner === "Production Planner")
+  }, [pmAtRiskDeliveries])
+  
+  const planningWithSlip = useMemo(() => {
+    return planningDeliveries.map(d => {
+      const slipDays = Math.max(0, Math.floor((d.expectedDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)))
+      return { ...d, slipDays }
+    })
+  }, [planningDeliveries])
+  
+  // Pareto: Planning Reasons
+  const planningParetoData = useMemo(() => {
+    const reasonMap = new Map<string, number>()
+    planningWithSlip.forEach(d => {
+      const reason = d.planningReason || "Unknown Planning"
+      reasonMap.set(reason, (reasonMap.get(reason) || 0) + d.slipDays)
+    })
+    const sorted = Array.from(reasonMap.entries()).sort((a, b) => b[1] - a[1])
+    const total = sorted.reduce((s, [, v]) => s + v, 0)
+    let cumulative = 0
+    return sorted.map(([reason, slipDays]) => {
+      cumulative += slipDays
+      return { reason, slipDays, cumulativePct: total > 0 ? Math.round((cumulative / total) * 100) : 0 }
+    })
+  }, [planningWithSlip])
+  
+  // Filter states for deep-dive
+  const [factoryReasonFilter, setFactoryReasonFilter] = useState<string | null>(null)
+  const [mrbReasonFilter, setMrbReasonFilter] = useState<string | null>(null)
+  const [planningReasonFilter, setPlanningReasonFilter] = useState<string | null>(null)
+  
+  // Filtered deliveries for tables
+  const factoryTableData = useMemo(() => {
+    let data = factoryOpsWithSlip
+    if (factoryReasonFilter) data = data.filter(d => d.capacityReason === factoryReasonFilter)
+    return data.sort((a, b) => b.slipDays - a.slipDays)
+  }, [factoryOpsWithSlip, factoryReasonFilter])
+  
+  const mrbTableData = useMemo(() => {
+    let data = qualityMrbWithSlip
+    if (mrbReasonFilter) data = data.filter(d => d.mrbReason === mrbReasonFilter)
+    return data.sort((a, b) => b.slipDays - a.slipDays)
+  }, [qualityMrbWithSlip, mrbReasonFilter])
+  
+  const planningTableData = useMemo(() => {
+    let data = planningWithSlip
+    if (planningReasonFilter) data = data.filter(d => d.planningReason === planningReasonFilter)
+    return data.sort((a, b) => b.slipDays - a.slipDays)
+  }, [planningWithSlip, planningReasonFilter])
+  
   // Insight Header: dynamic summary
   const insightSummary = useMemo(() => {
     const next30 = atRiskDeliveries.filter(d => {
@@ -1585,6 +1777,382 @@ export function OTDTracking() {
                   </CardContent>
                 </Card>
               </div>
+              
+              {/* ===== DEEP DIVE: Factory/Ops (when that tab is active) ===== */}
+              {pmActiveOwnerTab === "Factory/Operations" && factoryOpsWithSlip.length > 0 && (
+                <div className="space-y-5 mt-5">
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <Activity className="w-5 h-5" /> Factory/Ops Deep Dive: Capacity Impact Analysis
+                  </h3>
+                  
+                  {/* Charts Row */}
+                  <div className="grid grid-cols-2 gap-5">
+                    {/* Stacked Bar: OTD Slip Impact by Workcenter */}
+                    <Card className="border border-gray-200">
+                      <CardHeader className="py-3 px-4">
+                        <CardTitle className="text-base font-bold text-gray-800">OTD Slip Impact by Workcenter/Test Cell</CardTitle>
+                        <p className="text-sm text-gray-500">Slip Days = max(0, Expected - Contract). Stacked by Capacity Reason.</p>
+                      </CardHeader>
+                      <CardContent className="px-4 pb-4">
+                        <div className="h-[400px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={factoryWorkcenterChartData} layout="vertical" margin={{ left: 20, right: 30 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                              <XAxis type="number" tick={{ fontSize: 12 }} label={{ value: "Slip Days", position: "bottom", fontSize: 12 }} />
+                              <YAxis dataKey="workcenter" type="category" width={100} tick={{ fontSize: 11 }} />
+                              <Tooltip formatter={(v: number, name: string) => [`${v} days`, name]} />
+                              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 10 }} />
+                              {factoryCapacityReasons.map(reason => (
+                                <Bar 
+                                  key={reason} 
+                                  dataKey={reason} 
+                                  stackId="a" 
+                                  fill={CAPACITY_REASON_COLORS[reason] || "#6B7280"}
+                                  cursor="pointer"
+                                  onClick={() => setFactoryReasonFilter(factoryReasonFilter === reason ? null : reason)}
+                                />
+                              ))}
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    
+                    {/* Pareto: Top Capacity Loss Reasons */}
+                    <Card className="border border-gray-200">
+                      <CardHeader className="py-3 px-4">
+                        <CardTitle className="text-base font-bold text-gray-800">Top Capacity Loss Reasons (Slip Days)</CardTitle>
+                        <p className="text-sm text-gray-500">Click a bar to filter the workcenter chart and table below.</p>
+                      </CardHeader>
+                      <CardContent className="px-4 pb-4">
+                        <div className="h-[400px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart data={factoryParetoData} margin={{ left: 10, right: 30, bottom: 60 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                              <XAxis dataKey="reason" tick={{ fontSize: 10, angle: -45, textAnchor: 'end' }} interval={0} height={80} />
+                              <YAxis yAxisId="left" tick={{ fontSize: 12 }} label={{ value: "Slip Days", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                              <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} tickFormatter={(v) => `${v}%`} />
+                              <Tooltip formatter={(v: number, name: string) => [name === "cumulativePct" ? `${v}%` : `${v} days`, name === "cumulativePct" ? "Cumulative %" : "Slip Days"]} />
+                              <Bar 
+                                yAxisId="left" 
+                                dataKey="slipDays" 
+                                radius={[4, 4, 0, 0]}
+                                cursor="pointer"
+                                onClick={(data) => setFactoryReasonFilter(factoryReasonFilter === data.reason ? null : data.reason)}
+                              >
+                                {factoryParetoData.map((entry, i) => (
+                                  <Cell key={i} fill={factoryReasonFilter === entry.reason ? "#1D4ED8" : (CAPACITY_REASON_COLORS[entry.reason] || "#6B7280")} />
+                                ))}
+                              </Bar>
+                              <Line yAxisId="right" type="monotone" dataKey="cumulativePct" stroke="#EF4444" strokeWidth={2} dot={{ fill: "#EF4444", r: 4 }} />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                  
+                  {/* Factory/Ops Constraint Events Table */}
+                  <Card className="border border-gray-200">
+                    <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base font-bold text-gray-800">Factory/Ops Constraint Events</CardTitle>
+                        <p className="text-sm text-gray-500">
+                          {factoryReasonFilter ? `Filtered by: ${factoryReasonFilter}` : "All capacity-driven at-risk/late deliveries"}
+                          {" "}({factoryTableData.length} items)
+                        </p>
+                      </div>
+                      {factoryReasonFilter && (
+                        <Button variant="outline" size="sm" onClick={() => setFactoryReasonFilter(null)}>
+                          Clear Filter
+                        </Button>
+                      )}
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      <div className="overflow-x-auto max-h-[400px]">
+                        <table className="w-full">
+                          <thead className="sticky top-0 bg-gray-50">
+                            <tr className="border-b border-gray-200">
+                              {["Program", "CLIN", "Workcenter", "Capacity Reason", "Contract", "Expected", "Slip Days", "Evidence", "Action"].map(h => (
+                                <th key={h} className="text-left p-3 text-sm font-bold text-gray-700 whitespace-nowrap">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {factoryTableData.slice(0, 25).map(d => (
+                              <tr key={d.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(d)}>
+                                <td className="p-3 text-sm font-semibold">{d.program}</td>
+                                <td className="p-3 text-sm text-gray-700">{d.clin}</td>
+                                <td className="p-3 text-sm font-medium text-blue-600">{d.workcenter || "—"}</td>
+                                <td className="p-3">
+                                  <span className="px-2 py-1 rounded text-xs font-medium" style={{ backgroundColor: `${CAPACITY_REASON_COLORS[d.capacityReason || "Unknown Capacity"]}20`, color: CAPACITY_REASON_COLORS[d.capacityReason || "Unknown Capacity"] }}>
+                                    {d.capacityReason || "Unknown"}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
+                                <td className="p-3 text-sm font-bold text-red-600">{d.slipDays}d</td>
+                                <td className="p-3 text-sm text-gray-500 max-w-[200px] truncate" title={d.evidence}>{d.evidence}</td>
+                                <td className="p-3 text-sm text-blue-600 font-medium">Reallocate resources</td>
+                              </tr>
+                            ))}
+                            {factoryTableData.length === 0 && (
+                              <tr><td colSpan={9} className="p-8 text-center text-sm text-gray-400">No Factory/Ops constraint events</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {factoryTableData.length > 25 && (
+                        <div className="py-3 px-4 border-t border-gray-100 text-center">
+                          <span className="text-sm text-gray-500">Showing 25 of {factoryTableData.length} items</span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+              
+              {/* ===== DEEP DIVE: Quality/MRB (when that tab is active) ===== */}
+              {pmActiveOwnerTab === "Quality/MRB" && qualityMrbWithSlip.length > 0 && (
+                <div className="space-y-5 mt-5">
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <FileText className="w-5 h-5" /> Quality/MRB Deep Dive: MRB Blocking Analysis
+                  </h3>
+                  
+                  {/* Charts Row */}
+                  <div className="grid grid-cols-2 gap-5">
+                    {/* Pareto: Top MRB Blockers */}
+                    <Card className="border border-gray-200">
+                      <CardHeader className="py-3 px-4">
+                        <CardTitle className="text-base font-bold text-gray-800">Top MRB Blockers (Slip Days)</CardTitle>
+                        <p className="text-sm text-gray-500">Click a bar to filter the table below.</p>
+                      </CardHeader>
+                      <CardContent className="px-4 pb-4">
+                        <div className="h-[400px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart data={mrbParetoData} margin={{ left: 10, right: 30, bottom: 60 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                              <XAxis dataKey="reason" tick={{ fontSize: 10, angle: -45, textAnchor: 'end' }} interval={0} height={80} />
+                              <YAxis yAxisId="left" tick={{ fontSize: 12 }} label={{ value: "Slip Days", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                              <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} tickFormatter={(v) => `${v}%`} />
+                              <Tooltip formatter={(v: number, name: string) => [name === "cumulativePct" ? `${v}%` : `${v} days`, name === "cumulativePct" ? "Cumulative %" : "Slip Days"]} />
+                              <Bar 
+                                yAxisId="left" 
+                                dataKey="slipDays" 
+                                radius={[4, 4, 0, 0]}
+                                cursor="pointer"
+                                onClick={(data) => setMrbReasonFilter(mrbReasonFilter === data.reason ? null : data.reason)}
+                              >
+                                {mrbParetoData.map((entry, i) => (
+                                  <Cell key={i} fill={mrbReasonFilter === entry.reason ? "#1D4ED8" : (MRB_REASON_COLORS[entry.reason] || "#6B7280")} />
+                                ))}
+                              </Bar>
+                              <Line yAxisId="right" type="monotone" dataKey="cumulativePct" stroke="#EF4444" strokeWidth={2} dot={{ fill: "#EF4444", r: 4 }} />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    
+                    {/* Stacked Bar: OTD Slip Impact by MRB Step */}
+                    <Card className="border border-gray-200">
+                      <CardHeader className="py-3 px-4">
+                        <CardTitle className="text-base font-bold text-gray-800">OTD Slip Impact by MRB Step</CardTitle>
+                        <p className="text-sm text-gray-500">Slip Days by MRB workflow step, stacked by blocking reason.</p>
+                      </CardHeader>
+                      <CardContent className="px-4 pb-4">
+                        <div className="h-[400px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={mrbStepChartData} layout="vertical" margin={{ left: 20, right: 30 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                              <XAxis type="number" tick={{ fontSize: 12 }} label={{ value: "Slip Days", position: "bottom", fontSize: 12 }} />
+                              <YAxis dataKey="step" type="category" width={120} tick={{ fontSize: 11 }} />
+                              <Tooltip formatter={(v: number, name: string) => [`${v} days`, name]} />
+                              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 10 }} />
+                              {mrbReasonsList.map(reason => (
+                                <Bar 
+                                  key={reason} 
+                                  dataKey={reason} 
+                                  stackId="a" 
+                                  fill={MRB_REASON_COLORS[reason] || "#6B7280"}
+                                  cursor="pointer"
+                                  onClick={() => setMrbReasonFilter(mrbReasonFilter === reason ? null : reason)}
+                                />
+                              ))}
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                  
+                  {/* MRB Blocking Events Table */}
+                  <Card className="border border-gray-200">
+                    <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base font-bold text-gray-800">MRB Blocking Events</CardTitle>
+                        <p className="text-sm text-gray-500">
+                          {mrbReasonFilter ? `Filtered by: ${mrbReasonFilter}` : "All MRB-driven at-risk/late deliveries"}
+                          {" "}({mrbTableData.length} items)
+                        </p>
+                      </div>
+                      {mrbReasonFilter && (
+                        <Button variant="outline" size="sm" onClick={() => setMrbReasonFilter(null)}>
+                          Clear Filter
+                        </Button>
+                      )}
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      <div className="overflow-x-auto max-h-[400px]">
+                        <table className="w-full">
+                          <thead className="sticky top-0 bg-gray-50">
+                            <tr className="border-b border-gray-200">
+                              {["NC/MRB #", "Program", "CLIN", "MRB Step", "MRB Reason", "Age", "Contract", "Expected", "Slip Days", "Action"].map(h => (
+                                <th key={h} className="text-left p-3 text-sm font-bold text-gray-700 whitespace-nowrap">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {mrbTableData.slice(0, 25).map(d => (
+                              <tr key={d.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(d)}>
+                                <td className="p-3 text-sm font-mono text-blue-600">{d.ncNumber || "—"}</td>
+                                <td className="p-3 text-sm font-semibold">{d.program}</td>
+                                <td className="p-3 text-sm text-gray-700">{d.clin}</td>
+                                <td className="p-3 text-sm font-medium">{d.mrbStep || "—"}</td>
+                                <td className="p-3">
+                                  <span className="px-2 py-1 rounded text-xs font-medium" style={{ backgroundColor: `${MRB_REASON_COLORS[d.mrbReason || "Unknown MRB"]}20`, color: MRB_REASON_COLORS[d.mrbReason || "Unknown MRB"] }}>
+                                    {d.mrbReason || "Unknown"}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-sm font-bold text-orange-600">{d.mrbAge || "—"}d</td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
+                                <td className="p-3 text-sm font-bold text-red-600">{d.slipDays}d</td>
+                                <td className="p-3 text-sm text-blue-600 font-medium">Prioritize disposition</td>
+                              </tr>
+                            ))}
+                            {mrbTableData.length === 0 && (
+                              <tr><td colSpan={10} className="p-8 text-center text-sm text-gray-400">No MRB blocking events</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {mrbTableData.length > 25 && (
+                        <div className="py-3 px-4 border-t border-gray-100 text-center">
+                          <span className="text-sm text-gray-500">Showing 25 of {mrbTableData.length} items</span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+              
+              {/* ===== DEEP DIVE: Planning (when that tab is active) ===== */}
+              {pmActiveOwnerTab === "Production Planner" && planningWithSlip.length > 0 && (
+                <div className="space-y-5 mt-5">
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <Target className="w-5 h-5" /> Planning Deep Dive: Plan vs Contract Analysis
+                  </h3>
+                  <p className="text-sm text-gray-600">
+                    Planning driver is used only when the miss is driven by internal plan/forecast dates being behind contract,
+                    and not primarily supply, MRB, or capacity. "Unknown Planning" indicates insufficient data to determine root cause.
+                  </p>
+                  
+                  {/* Pareto: Planning Reasons */}
+                  <Card className="border border-gray-200">
+                    <CardHeader className="py-3 px-4">
+                      <CardTitle className="text-base font-bold text-gray-800">Planning Reasons (Slip Days)</CardTitle>
+                      <p className="text-sm text-gray-500">Click a bar to filter the table below.</p>
+                    </CardHeader>
+                    <CardContent className="px-4 pb-4">
+                      <div className="h-[300px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <ComposedChart data={planningParetoData} margin={{ left: 10, right: 30, bottom: 60 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                            <XAxis dataKey="reason" tick={{ fontSize: 10, angle: -30, textAnchor: 'end' }} interval={0} height={80} />
+                            <YAxis yAxisId="left" tick={{ fontSize: 12 }} label={{ value: "Slip Days", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                            <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} tickFormatter={(v) => `${v}%`} />
+                            <Tooltip formatter={(v: number, name: string) => [name === "cumulativePct" ? `${v}%` : `${v} days`, name === "cumulativePct" ? "Cumulative %" : "Slip Days"]} />
+                            <Bar 
+                              yAxisId="left" 
+                              dataKey="slipDays" 
+                              radius={[4, 4, 0, 0]}
+                              cursor="pointer"
+                              onClick={(data) => setPlanningReasonFilter(planningReasonFilter === data.reason ? null : data.reason)}
+                            >
+                              {planningParetoData.map((entry, i) => (
+                                <Cell key={i} fill={planningReasonFilter === entry.reason ? "#1D4ED8" : (PLANNING_REASON_COLORS[entry.reason] || "#6B7280")} />
+                              ))}
+                            </Bar>
+                            <Line yAxisId="right" type="monotone" dataKey="cumulativePct" stroke="#EF4444" strokeWidth={2} dot={{ fill: "#EF4444", r: 4 }} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  {/* Planning Events Table */}
+                  <Card className="border border-gray-200">
+                    <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base font-bold text-gray-800">Planning Misalignment Events</CardTitle>
+                        <p className="text-sm text-gray-500">
+                          {planningReasonFilter ? `Filtered by: ${planningReasonFilter}` : "All planning-driven at-risk/late deliveries"}
+                          {" "}({planningTableData.length} items)
+                        </p>
+                      </div>
+                      {planningReasonFilter && (
+                        <Button variant="outline" size="sm" onClick={() => setPlanningReasonFilter(null)}>
+                          Clear Filter
+                        </Button>
+                      )}
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      <div className="overflow-x-auto max-h-[400px]">
+                        <table className="w-full">
+                          <thead className="sticky top-0 bg-gray-50">
+                            <tr className="border-b border-gray-200">
+                              {["Program", "CLIN", "Planning Reason", "Contract", "IOP Date", "Delta", "Expected", "Slip Days", "Evidence", "Action"].map(h => (
+                                <th key={h} className="text-left p-3 text-sm font-bold text-gray-700 whitespace-nowrap">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {planningTableData.slice(0, 25).map(d => (
+                              <tr key={d.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(d)}>
+                                <td className="p-3 text-sm font-semibold">{d.program}</td>
+                                <td className="p-3 text-sm text-gray-700">{d.clin}</td>
+                                <td className="p-3">
+                                  <span className="px-2 py-1 rounded text-xs font-medium" style={{ backgroundColor: `${PLANNING_REASON_COLORS[d.planningReason || "Unknown Planning"]}20`, color: PLANNING_REASON_COLORS[d.planningReason || "Unknown Planning"] }}>
+                                    {d.planningReason || "Unknown"}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{d.iopDate ? fmtDate(d.iopDate) : "—"}</td>
+                                <td className={`p-3 text-sm font-bold ${d.deltaDays > 0 ? "text-red-600" : "text-green-600"}`}>
+                                  {d.deltaDays > 0 ? "+" : ""}{d.deltaDays}d
+                                </td>
+                                <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
+                                <td className="p-3 text-sm font-bold text-red-600">{d.slipDays}d</td>
+                                <td className="p-3 text-sm text-gray-500 max-w-[200px] truncate" title={d.evidence}>{d.evidence}</td>
+                                <td className="p-3 text-sm text-blue-600 font-medium">Review/replan</td>
+                              </tr>
+                            ))}
+                            {planningTableData.length === 0 && (
+                              <tr><td colSpan={10} className="p-8 text-center text-sm text-gray-400">No planning misalignment events</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {planningTableData.length > 25 && (
+                        <div className="py-3 px-4 border-t border-gray-100 text-center">
+                          <span className="text-sm text-gray-500">Showing 25 of {planningTableData.length} items</span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
             </div>
           )}
           

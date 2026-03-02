@@ -8,6 +8,14 @@ export type SeverityLevel = "Critical" | "High" | "Medium" | "Low"
 export type TimeBucket = "Week" | "Month" | "Quarter"
 export type MRBStep = "Receiving Inspection" | "MRB Review" | "Disposition" | "Released"
 
+// Detailed reason categories for deep-dive analysis
+export type CapacityReason = "Workcenter Bottleneck" | "Test Constraint" | "Machine Downtime" | "Staffing Shortage" | "Setup/Changeover" | "Rework/Yield Loss" | "Unknown Capacity"
+export type MRBReason = "RI Backlog" | "MRB Review Pending" | "Disposition Pending" | "Rework Required" | "Retest/Re-inspection" | "Waiting on Engineering" | "Waiting on Supplier" | "Unknown MRB"
+export type PlanningReason = "Plan Date Behind Contract" | "Forecast Mismatch" | "Contract Change Not Reflected" | "Sequencing/Priority Issue" | "Unknown Planning"
+
+// Workcenters/Test Cells
+export type Workcenter = "CNC-104" | "CNC-105" | "CNC-108" | "CNC-115" | "CNC-116" | "CNC-119" | "CNC-120" | "Assembly-A" | "Assembly-B" | "Assembly-C" | "Test-Cell-1" | "Test-Cell-2" | "Test-Cell-3" | "Paint-01" | "Weld-A" | "Weld-B" | "Inspection-01" | "Pack-Ship"
+
 export type OTDDelivery = {
   id: string
   program: string
@@ -44,6 +52,15 @@ export type OTDDelivery = {
   pdmForecastDate: Date | null
   deltaDays: number
   changeHistory: { date: Date; field: string; from: string; to: string }[]
+  // Deep-dive fields for Factory/Ops, Quality/MRB, Planning analysis
+  workcenter: Workcenter | null
+  capacityReason: CapacityReason | null
+  mrbStep: MRBStep | null
+  mrbReason: MRBReason | null
+  planningReason: PlanningReason | null
+  ncNumber: string | null
+  mrbAge: number | null
+  evidence: string
 }
 
 export type OTDKPIs = {
@@ -121,6 +138,44 @@ const suppliers = ["AeroSupply Inc", "Precision Parts Ltd", "FastConnect Co", "P
 const commodities = ["Electronics", "RF Systems", "Power Systems", "Structural", "Wiring/Harness", "Enclosures", "Antennas", "Software/Firmware"]
 const owners = ["J. Smith", "M. Rodriguez", "A. Chen", "K. Patel", "S. Johnson", "R. Williams", "T. Brown", "L. Davis"]
 
+// Workcenters/Test Cells for Factory/Ops analysis
+const workcenters: Workcenter[] = ["CNC-104", "CNC-105", "CNC-108", "CNC-115", "CNC-116", "CNC-119", "CNC-120", "Assembly-A", "Assembly-B", "Assembly-C", "Test-Cell-1", "Test-Cell-2", "Test-Cell-3", "Paint-01", "Weld-A", "Weld-B", "Inspection-01", "Pack-Ship"]
+
+// Capacity reasons for Factory/Ops deep dive
+const capacityReasons: CapacityReason[] = ["Workcenter Bottleneck", "Test Constraint", "Machine Downtime", "Staffing Shortage", "Setup/Changeover", "Rework/Yield Loss", "Unknown Capacity"]
+
+// MRB reasons for Quality/MRB deep dive
+const mrbReasons: MRBReason[] = ["RI Backlog", "MRB Review Pending", "Disposition Pending", "Rework Required", "Retest/Re-inspection", "Waiting on Engineering", "Waiting on Supplier", "Unknown MRB"]
+const mrbSteps: MRBStep[] = ["Receiving Inspection", "MRB Review", "Disposition", "Released"]
+
+// Planning reasons
+const planningReasons: PlanningReason[] = ["Plan Date Behind Contract", "Forecast Mismatch", "Contract Change Not Reflected", "Sequencing/Priority Issue", "Unknown Planning"]
+
+// Evidence templates by driver
+const capacityEvidenceTemplates = [
+  "WC constraint on {wc} - queue depth {n}",
+  "Test cell {wc} backlog - {n} units waiting",
+  "Downtime on {wc} - {n} hours lost",
+  "Staff shortage in {wc} area",
+  "Setup delay on {wc} - changeover took {n}h",
+  "Rework loop on {wc} - yield issue"
+]
+const mrbEvidenceTemplates = [
+  "NC-{nc} in RI queue - {n} days",
+  "MRB-{nc} pending review - age {n}d",
+  "Awaiting disposition for NC-{nc}",
+  "Rework required per MRB-{nc}",
+  "Re-inspection needed - {nc}",
+  "Engineering response pending for NC-{nc}",
+  "Waiting on supplier corrective action - {nc}"
+]
+const planningEvidenceTemplates = [
+  "IOP date {n}d behind contract",
+  "PDM forecast mismatch - delta {n}d",
+  "Contract change {n}d ago not in plan",
+  "Priority conflict with other CLINs"
+]
+
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
 }
@@ -160,6 +215,26 @@ function deriveSeverity(daysLate: number, contractDateDelta: number): SeverityLe
   if (daysLate > 7 || contractDateDelta < 14) return "High"
   if (daysLate > 3 || contractDateDelta < 30) return "Medium"
   return "Low"
+}
+
+function generateEvidence(driver: DriverCategory, workcenter: Workcenter | null, ncNumber: string | null, deltaDays: number): string {
+  const n = randomInt(2, 45)
+  switch (driver) {
+    case "Capacity": {
+      const template = randomChoice(capacityEvidenceTemplates)
+      return template.replace("{wc}", workcenter || "WC").replace("{n}", String(n))
+    }
+    case "MRB/RI": {
+      const template = randomChoice(mrbEvidenceTemplates)
+      return template.replace("{nc}", ncNumber || "0000").replace("{n}", String(n))
+    }
+    case "Planning": {
+      const template = randomChoice(planningEvidenceTemplates)
+      return template.replace("{n}", String(Math.abs(deltaDays)))
+    }
+    default:
+      return `PO late - supplier delay ${n}d`
+  }
 }
 
 export function generateOTDDeliveries(count: number = 150): OTDDelivery[] {
@@ -207,6 +282,17 @@ export function generateOTDDeliveries(count: number = 150): OTDDelivery[] {
     const severity = deriveSeverity(daysLate, contractDateDelta)
     const program = randomChoice(programs)
     const owner = randomChoice(owners)
+    
+    // Generate deep-dive fields based on driver
+    const workcenter = driver === "Capacity" ? randomChoice(workcenters) : null
+    const capacityReason = driver === "Capacity" ? randomChoice(capacityReasons) : null
+    const ncNumber = (driver === "MRB/RI") ? `NC-${randomInt(10000, 99999)}` : null
+    const mrbStep = (driver === "MRB/RI") ? randomChoice(mrbSteps) : null
+    const mrbReason = (driver === "MRB/RI") ? randomChoice(mrbReasons) : null
+    const mrbAge = (driver === "MRB/RI") ? randomInt(1, 60) : null
+    const planningReason = driver === "Planning" ? randomChoice(planningReasons) : null
+    const deltaDays = Math.floor((iopDate.getTime() - contractDate.getTime()) / (24 * 60 * 60 * 1000))
+    const evidence = generateEvidence(driver, workcenter, ncNumber, deltaDays)
 
     deliveries.push({
       id: `DEL-${String(i + 1).padStart(5, "0")}`,
@@ -242,7 +328,16 @@ export function generateOTDDeliveries(count: number = 150): OTDDelivery[] {
       iopDate,
       deliveryPlanDate,
       pdmForecastDate: addDays(contractDate, randomInt(-10, 20)),
-      deltaDays: Math.floor((iopDate.getTime() - contractDate.getTime()) / (24 * 60 * 60 * 1000)),
+      // Deep-dive fields
+      workcenter,
+      capacityReason,
+      mrbStep,
+      mrbReason,
+      planningReason,
+      ncNumber,
+      mrbAge,
+      evidence,
+      deltaDays,
       changeHistory: [
         { date: addDays(contractDate, -30), field: "promiseDate", from: addDays(promiseDate, -5).toISOString().split("T")[0], to: promiseDate.toISOString().split("T")[0] },
         { date: addDays(contractDate, -15), field: "expectedDate", from: addDays(expectedDate, -3).toISOString().split("T")[0], to: expectedDate.toISOString().split("T")[0] },
