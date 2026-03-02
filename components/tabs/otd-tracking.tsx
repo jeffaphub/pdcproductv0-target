@@ -120,53 +120,108 @@ export function OTDTracking() {
   const topDriver = Object.entries(driverCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as DriverCategory || "Supply"
   const supplyPct = atRiskDeliveries.length > 0 ? Math.round((driverCounts.Supply / atRiskDeliveries.length) * 100) : 0
 
-  // PM Tab: Filtered deliveries based on PM scope controls with proper time scoping
-  const pmFilteredDeliveries = useMemo(() => {
+  // PM Tab: Enrich all deliveries with computed fields
+  const pmEnrichedDeliveries = useMemo(() => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const todayMs = today.getTime()
-    const horizonMs = pmHorizon * 24 * 60 * 60 * 1000
     
-    let result = allDeliveries.map(d => {
+    return allDeliveries.map(d => {
       const daysToContract = Math.floor((d.contractDate.getTime() - todayMs) / (24 * 60 * 60 * 1000))
       const expectedExceedsContract = d.expectedDate > d.contractDate
-      // Customer Comms Required: Late OR (DaysToContract <= 7 AND Expected > Contract)
       const customerCommsRequired = d.otdStatus === "Late" || (daysToContract <= 7 && expectedExceedsContract)
-      // Internal escalation owner derived ONLY from driver
       const escalationOwner = d.driver === "Supply" ? "Supply Chain/Buyer"
         : d.driver === "MRB/RI" ? "Quality/MRB"
         : d.driver === "Capacity" ? "Factory/Operations"
         : "Production Planner"
       return { ...d, daysToContract, customerCommsRequired, escalationOwner }
     })
+  }, [allDeliveries])
+
+  // PM: Check if selected program is outside PM's portfolio (for warning banner)
+  const pmProgramOutsidePortfolio = useMemo(() => {
+    if (pmSelectedManager === "all") return false
+    const pmPrograms = programManagerMapping[pmSelectedManager] || []
+    // Check explicit program selections
+    if (pmSelectedPrograms.length > 0) {
+      return pmSelectedPrograms.some(p => !pmPrograms.includes(p))
+    }
+    if (pmSelectedProgram) {
+      return !pmPrograms.includes(pmSelectedProgram)
+    }
+    return false
+  }, [pmSelectedManager, pmSelectedPrograms, pmSelectedProgram, programManagerMapping])
+
+  // PM: Data Sanity counts (always computed, ignoring some filters for visibility)
+  const pmDataSanity = useMemo(() => {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const todayMs = today.getTime()
     
-    // Filter by PM's portfolio
+    // Total for selected program (ignoring PM filter)
+    const selectedProg = pmSelectedProgram || (pmSelectedPrograms.length > 0 ? pmSelectedPrograms[0] : null)
+    const totalForProgram = selectedProg 
+      ? pmEnrichedDeliveries.filter(d => d.program === selectedProg).length 
+      : pmEnrichedDeliveries.length
+    
+    // After PM filter (portfolio mapping)
+    let afterPmFilter = pmEnrichedDeliveries
     if (pmSelectedManager !== "all") {
       const pmPrograms = programManagerMapping[pmSelectedManager] || []
-      result = result.filter(d => pmPrograms.includes(d.program))
+      afterPmFilter = pmEnrichedDeliveries.filter(d => pmPrograms.includes(d.program))
     }
+    const deliveriesAfterPmFilter = afterPmFilter.length
     
-    // Filter by selected programs within portfolio
-    if (pmSelectedPrograms.length > 0) {
-      result = result.filter(d => pmSelectedPrograms.includes(d.program))
+    // Upcoming due in horizon
+    const upcomingDueInHorizon = afterPmFilter.filter(d => d.daysToContract >= 0 && d.daysToContract <= pmHorizon).length
+    
+    // Backlog late in window
+    const backlogLateInWindow = afterPmFilter.filter(d => d.daysToContract >= -pmHorizon && d.daysToContract < 0).length
+    
+    // At-risk in horizon (upcoming)
+    const atRiskInHorizon = afterPmFilter.filter(d => 
+      d.daysToContract >= 0 && d.daysToContract <= pmHorizon && (d.otdStatus === "At-Risk" || d.otdStatus === "Late")
+    ).length
+    
+    // Late in window (backlog)
+    const lateInWindow = afterPmFilter.filter(d => 
+      d.daysToContract >= -pmHorizon && d.daysToContract < 0 && d.otdStatus === "Late"
+    ).length
+    
+    return { totalForProgram, deliveriesAfterPmFilter, upcomingDueInHorizon, backlogLateInWindow, atRiskInHorizon, lateInWindow }
+  }, [pmEnrichedDeliveries, pmSelectedManager, pmSelectedPrograms, pmSelectedProgram, pmHorizon, programManagerMapping])
+
+  // PM Tab: Filtered deliveries - Program selection OVERRIDES PM mapping
+  const pmFilteredDeliveries = useMemo(() => {
+    let result = pmEnrichedDeliveries
+    
+    // If a specific program is selected, it OVERRIDES PM portfolio filter
+    const hasExplicitProgramSelection = pmSelectedProgram || pmSelectedPrograms.length > 0
+    
+    if (hasExplicitProgramSelection) {
+      // Program selection takes priority - do NOT filter by PM portfolio
+      if (pmSelectedProgram) {
+        result = result.filter(d => d.program === pmSelectedProgram)
+      } else if (pmSelectedPrograms.length > 0) {
+        result = result.filter(d => pmSelectedPrograms.includes(d.program))
+      }
+    } else {
+      // No explicit program selection - apply PM portfolio filter
+      if (pmSelectedManager !== "all") {
+        const pmPrograms = programManagerMapping[pmSelectedManager] || []
+        result = result.filter(d => pmPrograms.includes(d.program))
+      }
     }
     
     // Time scoping based on Mode
     if (pmMode === "upcoming") {
-      // Upcoming: ContractDate between Today and Today+Horizon
       result = result.filter(d => d.daysToContract >= 0 && d.daysToContract <= pmHorizon)
     } else {
-      // Backlog: ContractDate between Today-Horizon and Today (past due)
       if (pmIncludeAllBacklog) {
         result = result.filter(d => d.daysToContract < 0)
       } else {
         result = result.filter(d => d.daysToContract >= -pmHorizon && d.daysToContract < 0)
       }
-    }
-    
-    // Filter by single selected program (deep dive)
-    if (pmSelectedProgram) {
-      result = result.filter(d => d.program === pmSelectedProgram)
     }
     
     // Filter by customer comms required toggle
@@ -175,7 +230,7 @@ export function OTDTracking() {
     }
     
     return result
-  }, [allDeliveries, pmSelectedManager, pmSelectedPrograms, pmHorizon, pmMode, pmIncludeAllBacklog, pmSelectedProgram, pmCustomerCommsOnly, programManagerMapping])
+  }, [pmEnrichedDeliveries, pmSelectedManager, pmSelectedPrograms, pmHorizon, pmMode, pmIncludeAllBacklog, pmSelectedProgram, pmCustomerCommsOnly, programManagerMapping])
 
   // PM: At-Risk and Late deliveries
   const pmAtRiskDeliveries = useMemo(() => {
@@ -242,22 +297,31 @@ export function OTDTracking() {
       .sort((a, b) => (b.atRiskCount + b.lateCount) - (a.atRiskCount + a.lateCount) || a.nearestDue - b.nearestDue)
   }, [pmFilteredDeliveries])
 
-  // PM: KPI calculations
+  // PM: KPI calculations with proper zero-handling
   const pmKpis = useMemo(() => {
     const dueInHorizon = pmFilteredDeliveries.length
     const atRiskUpcoming = pmAtRiskOnlyDeliveries.length
     const lateBacklog = pmLateDeliveries.length
+    const totalAtRiskAndLate = pmAtRiskDeliveries.length
+    
     const driverCounts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
     const programCounts = new Map<string, number>()
     pmAtRiskDeliveries.forEach(d => {
       driverCounts[d.driver]++
       programCounts.set(d.program, (programCounts.get(d.program) || 0) + 1)
     })
-    const topDriver = (Object.entries(driverCounts) as [DriverCategory, number][])
-      .sort((a, b) => b[1] - a[1])[0]?.[0] || "Supply"
-    const topProgram = Array.from(programCounts.entries())
-      .sort((a, b) => b[1] - a[1])[0]?.[0] || "N/A"
-    return { dueInHorizon, atRiskUpcoming, lateBacklog, topDriver, topProgram }
+    
+    // If no at-risk/late items, show "—" instead of misleading driver
+    const sortedDrivers = (Object.entries(driverCounts) as [DriverCategory, number][])
+      .sort((a, b) => b[1] - a[1])
+    const topDriver = totalAtRiskAndLate > 0 ? sortedDrivers[0]?.[0] : null
+    const topDriverCount = totalAtRiskAndLate > 0 ? sortedDrivers[0]?.[1] : 0
+    
+    const sortedPrograms = Array.from(programCounts.entries()).sort((a, b) => b[1] - a[1])
+    const topProgram = totalAtRiskAndLate > 0 ? sortedPrograms[0]?.[0] : null
+    const topProgramCount = totalAtRiskAndLate > 0 ? sortedPrograms[0]?.[1] : 0
+    
+    return { dueInHorizon, atRiskUpcoming, lateBacklog, totalAtRiskAndLate, topDriver, topDriverCount, topProgram, topProgramCount }
   }, [pmFilteredDeliveries, pmAtRiskDeliveries, pmAtRiskOnlyDeliveries, pmLateDeliveries])
 
   // PM: Escalation groups by owner (4 internal owners only, no Customer bucket)
@@ -836,14 +900,22 @@ export function OTDTracking() {
                       </Select>
                     </div>
                     
-                    {/* Programs Multi-select */}
+                    {/* Programs Multi-select - shows ALL programs so user can override PM portfolio */}
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-gray-700">Programs:</span>
                       <Select value={pmSelectedPrograms[0] || "all"} onValueChange={v => { setPmSelectedPrograms(v === "all" ? [] : [v]); setPmSelectedProgram(null); }}>
-                        <SelectTrigger className="w-[160px] h-10 text-sm"><SelectValue placeholder="All Programs" /></SelectTrigger>
+                        <SelectTrigger className="w-[180px] h-10 text-sm"><SelectValue placeholder="All Programs" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All Programs</SelectItem>
-                          {pmAvailablePrograms.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                          {/* Show ALL programs, not just PM's portfolio - allows override */}
+                          {programs.map(p => {
+                            const inPortfolio = pmSelectedManager === "all" || (programManagerMapping[pmSelectedManager] || []).includes(p)
+                            return (
+                              <SelectItem key={p} value={p}>
+                                {p} {!inPortfolio && pmSelectedManager !== "all" && <span className="text-gray-400">(outside portfolio)</span>}
+                              </SelectItem>
+                            )
+                          })}
                         </SelectContent>
                       </Select>
                     </div>
@@ -939,30 +1011,140 @@ export function OTDTracking() {
                 </CardContent>
               </Card>
 
-              {/* KPI STRIP - Big numbers */}
+              {/* WARNING BANNER: Program outside PM portfolio */}
+              {pmProgramOutsidePortfolio && (
+                <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4 flex items-center gap-3">
+                  <AlertTriangle className="w-5 h-5 text-yellow-600 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-yellow-800">
+                      Selected Program is not mapped to {pmSelectedManager}.
+                    </p>
+                    <p className="text-sm text-yellow-700">
+                      Results shown are for the selected program regardless of PM assignment. Switch PM to "All Managers" or update the portfolio mapping.
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => setPmSelectedManager("all")}
+                    className="px-3 py-1.5 text-sm font-medium bg-yellow-200 hover:bg-yellow-300 text-yellow-800 rounded transition-colors"
+                  >
+                    Switch to All Managers
+                  </button>
+                </div>
+              )}
+
+              {/* DATA SANITY PANEL - Always visible */}
+              <Card className="border border-gray-200 bg-gray-50">
+                <CardContent className="py-3 px-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Data Sanity Check</span>
+                    <div className="flex items-center gap-6 text-sm">
+                      <span className="text-gray-600">
+                        <strong className="text-gray-900">{pmDataSanity.totalForProgram}</strong> total for {pmSelectedProgram || pmSelectedPrograms[0] || "all programs"}
+                      </span>
+                      <span className="text-gray-400">|</span>
+                      <span className="text-gray-600">
+                        <strong className="text-gray-900">{pmDataSanity.deliveriesAfterPmFilter}</strong> after PM filter
+                      </span>
+                      <span className="text-gray-400">|</span>
+                      <span className="text-gray-600">
+                        <strong className="text-blue-600">{pmDataSanity.upcomingDueInHorizon}</strong> upcoming in {pmHorizon}d
+                      </span>
+                      <span className="text-gray-400">|</span>
+                      <span className="text-gray-600">
+                        <strong className="text-red-600">{pmDataSanity.backlogLateInWindow}</strong> backlog in {pmHorizon}d
+                      </span>
+                      <span className="text-gray-400">|</span>
+                      <span className="text-gray-600">
+                        <strong className="text-yellow-600">{pmDataSanity.atRiskInHorizon}</strong> at-risk
+                      </span>
+                      <span className="text-gray-400">|</span>
+                      <span className="text-gray-600">
+                        <strong className="text-red-600">{pmDataSanity.lateInWindow}</strong> late
+                      </span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* KPI STRIP - Big numbers with proper zero handling */}
               <div className="grid grid-cols-5 gap-4">
-                {[
-                  { label: "Due in Horizon", value: pmKpis.dueInHorizon, color: "text-gray-900" },
-                  { label: pmMode === "upcoming" ? "At-Risk (Upcoming)" : "At-Risk (Backlog)", value: pmKpis.atRiskUpcoming, color: "text-yellow-600" },
-                  { label: pmMode === "upcoming" ? "Late (in scope)" : "Late (Backlog)", value: pmKpis.lateBacklog, color: "text-red-600" },
-                  { label: "Top Driver", value: pmKpis.topDriver, color: `text-[${DRIVER_COLORS[pmKpis.topDriver]}]`, isText: true },
-                  { label: "Top Program", value: pmKpis.topProgram, color: "text-blue-600", isText: true },
-                ].map((kpi, i) => (
-                  <Card key={i} className="border border-gray-200">
-                    <CardContent className="p-4">
-                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">{kpi.label}</p>
-                      <p className={`text-3xl font-bold mt-1 ${kpi.color}`} style={!kpi.isText && kpi.label === "Top Driver" ? { color: DRIVER_COLORS[pmKpis.topDriver] } : {}}>
-                        {kpi.value}
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Due in Horizon</p>
+                    <p className="text-3xl font-bold mt-1 text-gray-900">{pmKpis.dueInHorizon}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+                      {pmMode === "upcoming" ? "At-Risk (Upcoming)" : "At-Risk (Backlog)"}
+                    </p>
+                    <p className="text-3xl font-bold mt-1 text-yellow-600">{pmKpis.atRiskUpcoming}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+                      {pmMode === "upcoming" ? "Late (in scope)" : "Late (Backlog)"}
+                    </p>
+                    <p className="text-3xl font-bold mt-1 text-red-600">{pmKpis.lateBacklog}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Top Driver</p>
+                    {pmKpis.topDriver ? (
+                      <p className="text-3xl font-bold mt-1" style={{ color: DRIVER_COLORS[pmKpis.topDriver] }}>
+                        {pmKpis.topDriver} <span className="text-lg text-gray-400">({pmKpis.topDriverCount})</span>
                       </p>
-                    </CardContent>
-                  </Card>
-                ))}
+                    ) : (
+                      <p className="text-3xl font-bold mt-1 text-gray-300">—</p>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Top Program</p>
+                    {pmKpis.topProgram ? (
+                      <p className="text-2xl font-bold mt-1 text-blue-600 truncate" title={pmKpis.topProgram}>
+                        {pmKpis.topProgram} <span className="text-lg text-gray-400">({pmKpis.topProgramCount})</span>
+                      </p>
+                    ) : (
+                      <p className="text-3xl font-bold mt-1 text-gray-300">—</p>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
               
-              {/* Status Banner */}
-              {pmAtRiskOnlyDeliveries.length === 0 && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800">
-                  0 upcoming at-risk items. {pmLateDeliveries.length} backlog late items in selected {pmMode} mode.
+              {/* Empty State with Actions - when no deliveries in upcoming mode */}
+              {pmMode === "upcoming" && pmFilteredDeliveries.length === 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+                  <p className="text-lg font-semibold text-blue-800 mb-2">
+                    No deliveries due in the next {pmHorizon} days for this scope.
+                  </p>
+                  <p className="text-sm text-blue-600 mb-4">Try one of these options:</p>
+                  <div className="flex items-center justify-center gap-4">
+                    <button 
+                      onClick={() => setPmMode("backlog")}
+                      className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
+                    >
+                      Switch to Backlog Mode
+                    </button>
+                    <button 
+                      onClick={() => setPmHorizon(90)}
+                      className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                    >
+                      Increase Horizon to 90d
+                    </button>
+                    {pmSelectedManager !== "all" && (
+                      <button 
+                        onClick={() => setPmSelectedManager("all")}
+                        className="px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 transition-colors"
+                      >
+                        Switch to All Managers
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1116,8 +1298,16 @@ export function OTDTracking() {
                             })}
                             {(pmEscalationData[pmActiveOwnerTab] || []).length === 0 && (
                               <tr>
-                                <td colSpan={11} className="p-8 text-center text-sm text-gray-400">
-                                  No items for {pmOwnerLabels[pmActiveOwnerTab]}
+                                <td colSpan={11} className="p-8 text-center">
+                                  <p className="text-sm text-gray-500 font-medium">
+                                    No items for {pmOwnerLabels[pmActiveOwnerTab]} in this scope.
+                                  </p>
+                                  <p className="text-xs text-gray-400 mt-1">
+                                    {pmMode === "upcoming" 
+                                      ? `No at-risk/late deliveries assigned to ${pmOwnerLabels[pmActiveOwnerTab]} in the next ${pmHorizon} days.`
+                                      : `No backlog items assigned to ${pmOwnerLabels[pmActiveOwnerTab]} in the past ${pmHorizon} days.`
+                                    }
+                                  </p>
                                 </td>
                               </tr>
                             )}
