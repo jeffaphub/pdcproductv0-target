@@ -241,21 +241,54 @@ export function OTDTracking() {
       d.daysToDue! >= 0 && d.daysToDue! <= pmHorizon && d.isAtRisk
     ).length
     
-    // Late: DueDateResolved < Today (past due)
+    // Late: DueDateResolved < Today (past due) - ALL late, regardless of horizon
     const lateCount = withValidDueDate.filter(d => d.isLate).length
+    
+    // All backlog (any past due, regardless of horizon)
+    const allBacklog = withValidDueDate.filter(d => d.daysToDue! < 0).length
+    
+    // Debug: find min/max daysToDue to understand date distribution
+    const allDaysToDue = withValidDueDate.map(d => d.daysToDue!).sort((a, b) => a - b)
+    const minDaysToDue = allDaysToDue[0] ?? 0
+    const maxDaysToDue = allDaysToDue[allDaysToDue.length - 1] ?? 0
+    
+    // Count items outside horizon window on either side
+    const outsideHorizonPast = withValidDueDate.filter(d => d.daysToDue! < -pmHorizon).length
+    const outsideHorizonFuture = withValidDueDate.filter(d => d.daysToDue! > pmHorizon).length
+    
+    // Debug log
+    console.log("[v0] PM Data Sanity:", {
+      totalInDataset,
+      deliveriesAfterPmFilter,
+      withValidDueDateCount: withValidDueDate.length,
+      upcomingDueInHorizon,
+      backlogInWindow,
+      allBacklog,
+      lateCount,
+      minDaysToDue,
+      maxDaysToDue,
+      outsideHorizonPast,
+      outsideHorizonFuture,
+      horizon: pmHorizon
+    })
     
     return { 
       totalInDataset,
       totalForProgram, 
       deliveriesAfterPmFilter, 
       upcomingDueInHorizon, 
-      backlogInWindow, 
+      backlogInWindow,
+      allBacklog,
       atRiskInHorizon, 
       lateCount,
       missingDueDate,
       missingExpectedDate,
       missingDueDatePct,
-      missingExpectedDatePct
+      missingExpectedDatePct,
+      minDaysToDue,
+      maxDaysToDue,
+      outsideHorizonPast,
+      outsideHorizonFuture
     }
   }, [pmEnrichedDeliveries, pmSelectedManager, pmSelectedPrograms, pmSelectedProgram, pmHorizon, programManagerMapping])
 
@@ -1125,11 +1158,11 @@ export function OTDTracking() {
                         </span>
                         <span className="text-gray-400">|</span>
                         <span className="text-gray-600">
-                          <strong className="text-blue-600">{pmDataSanity.upcomingDueInHorizon}</strong> upcoming
+                          <strong className="text-blue-600">{pmDataSanity.upcomingDueInHorizon}</strong> in {pmHorizon}d window
                         </span>
                         <span className="text-gray-400">|</span>
                         <span className="text-gray-600">
-                          <strong className="text-orange-600">{pmDataSanity.backlogInWindow}</strong> backlog
+                          <strong className="text-red-600">{pmDataSanity.allBacklog}</strong> past due total
                         </span>
                         <span className="text-gray-400">|</span>
                         <span className="text-gray-600">
@@ -1141,14 +1174,18 @@ export function OTDTracking() {
                         </span>
                       </div>
                     </div>
-                    {/* Null Date Diagnostics */}
+                    {/* Date Range Diagnostics */}
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                       <span>
-                        Missing DueDateResolved: <strong className={pmDataSanity.missingDueDatePct > 10 ? "text-red-600" : "text-gray-700"}>{pmDataSanity.missingDueDatePct.toFixed(1)}%</strong> ({pmDataSanity.missingDueDate})
+                        Date range: <strong className="text-gray-700">{pmDataSanity.minDaysToDue}d</strong> to <strong className="text-gray-700">{pmDataSanity.maxDaysToDue}d</strong>
                       </span>
                       <span className="text-gray-300">|</span>
                       <span>
-                        Missing ExpectedDateResolved: <strong className={pmDataSanity.missingExpectedDatePct > 10 ? "text-red-600" : "text-gray-700"}>{pmDataSanity.missingExpectedDatePct.toFixed(1)}%</strong> ({pmDataSanity.missingExpectedDate})
+                        Outside {pmHorizon}d window: <strong className={pmDataSanity.outsideHorizonPast > 0 ? "text-orange-600" : "text-gray-700"}>{pmDataSanity.outsideHorizonPast}</strong> past, <strong className="text-gray-700">{pmDataSanity.outsideHorizonFuture}</strong> future
+                      </span>
+                      <span className="text-gray-300">|</span>
+                      <span>
+                        Missing dates: <strong className={pmDataSanity.missingDueDatePct > 10 ? "text-red-600" : "text-gray-700"}>{pmDataSanity.missingDueDatePct.toFixed(1)}%</strong>
                       </span>
                     </div>
                   </div>
@@ -1227,16 +1264,62 @@ export function OTDTracking() {
               </div>
               
               {/* Empty State with Actions - context-aware messaging */}
-              {pmFilteredDeliveries.length === 0 && pmDataSanity.totalForProgram > 0 && (
+              {pmFilteredDeliveries.length === 0 && pmDataSanity.deliveriesAfterPmFilter > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
-                  {/* Check if it's a missing date issue */}
-                  {pmDataSanity.missingDueDatePct > 50 ? (
+                  {/* Check if items exist outside horizon */}
+                  {pmMode === "upcoming" && pmDataSanity.outsideHorizonPast > 0 ? (
                     <>
                       <p className="text-lg font-semibold text-blue-800 mb-2">
-                        Records exist but due dates are missing or out of range.
+                        No upcoming deliveries in next {pmHorizon} days, but {pmDataSanity.outsideHorizonPast} items are past due.
                       </p>
                       <p className="text-sm text-blue-600 mb-4">
-                        {pmDataSanity.missingDueDate} of {pmDataSanity.totalForProgram} deliveries have no DueDateResolved. Check the date mapping (ContractDate → PromiseDate → ExpectedDate → ForecastDate).
+                        Date range: {pmDataSanity.minDaysToDue}d to {pmDataSanity.maxDaysToDue}d from today. {pmDataSanity.allBacklog} total past-due items exist.
+                      </p>
+                      <div className="flex items-center justify-center gap-4">
+                        <button 
+                          onClick={() => setPmMode("backlog")}
+                          className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
+                        >
+                          Switch to Backlog Mode ({pmDataSanity.allBacklog} items)
+                        </button>
+                        <button 
+                          onClick={() => setPmIncludeAllBacklog(true)}
+                          className="px-4 py-2 bg-orange-600 text-white font-medium rounded-lg hover:bg-orange-700 transition-colors"
+                        >
+                          Include All Backlog
+                        </button>
+                      </div>
+                    </>
+                  ) : pmMode === "backlog" && pmDataSanity.outsideHorizonPast > 0 && pmDataSanity.backlogInWindow === 0 ? (
+                    <>
+                      <p className="text-lg font-semibold text-blue-800 mb-2">
+                        {pmDataSanity.outsideHorizonPast} past-due items are older than {pmHorizon} days.
+                      </p>
+                      <p className="text-sm text-blue-600 mb-4">
+                        Oldest item: {Math.abs(pmDataSanity.minDaysToDue)} days past due. Expand horizon or include all backlog.
+                      </p>
+                      <div className="flex items-center justify-center gap-4">
+                        <button 
+                          onClick={() => setPmIncludeAllBacklog(true)}
+                          className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
+                        >
+                          Include All Backlog ({pmDataSanity.allBacklog} items)
+                        </button>
+                        <button 
+                          onClick={() => setPmHorizon(Math.abs(pmDataSanity.minDaysToDue) + 7)}
+                          className="px-4 py-2 bg-orange-600 text-white font-medium rounded-lg hover:bg-orange-700 transition-colors"
+                        >
+                          Extend Horizon to {Math.abs(pmDataSanity.minDaysToDue) + 7}d
+                        </button>
+                      </div>
+                    </>
+                  ) : pmDataSanity.missingDueDatePct > 50 ? (
+                    <>
+                      <p className="text-lg font-semibold text-blue-800 mb-2">
+                        Records exist but due dates are missing.
+                      </p>
+                      <p className="text-sm text-blue-600 mb-4">
+                        {pmDataSanity.missingDueDate} of {pmDataSanity.deliveriesAfterPmFilter} deliveries have no DueDateResolved.
                       </p>
                       <button 
                         onClick={() => setPmShowMissingDates(true)}
@@ -1248,10 +1331,10 @@ export function OTDTracking() {
                   ) : (
                     <>
                       <p className="text-lg font-semibold text-blue-800 mb-2">
-                        No deliveries due in the {pmMode === "upcoming" ? `next ${pmHorizon} days` : `past ${pmHorizon} days`} for this scope.
+                        No deliveries in the {pmMode === "upcoming" ? `next ${pmHorizon} days` : `past ${pmHorizon} days`}.
                       </p>
                       <p className="text-sm text-blue-600 mb-4">
-                        {pmDataSanity.totalForProgram} total records exist. {pmDataSanity.upcomingDueInHorizon} upcoming, {pmDataSanity.backlogInWindow} backlog.
+                        Date range: {pmDataSanity.minDaysToDue}d to {pmDataSanity.maxDaysToDue}d. Try expanding the horizon or switching mode.
                       </p>
                       <div className="flex items-center justify-center gap-4">
                         {pmMode === "upcoming" ? (
@@ -1270,19 +1353,11 @@ export function OTDTracking() {
                           </button>
                         )}
                         <button 
-                          onClick={() => setPmHorizon(90)}
+                          onClick={() => setPmHorizon(180)}
                           className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
                         >
-                          Increase Horizon to 90d
+                          Increase Horizon to 180d
                         </button>
-                        {pmSelectedManager !== "all" && (
-                          <button 
-                            onClick={() => setPmSelectedManager("all")}
-                            className="px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700 transition-colors"
-                          >
-                            Switch to All Managers
-                          </button>
-                        )}
                       </div>
                     </>
                   )}
