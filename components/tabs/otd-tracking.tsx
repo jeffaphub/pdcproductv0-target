@@ -168,33 +168,30 @@ export function OTDTracking() {
       .slice(0, 10)
   }, [atRiskDeliveries])
 
-  // Driver waterfall data - TRUE waterfall with floating bars
+  // Driver waterfall data - TRUE waterfall with floating bars using [start, end] range
   const driverWaterfallData = useMemo(() => {
     const total = atRiskDeliveries.length
     const drivers: DriverCategory[] = ["Supply", "MRB/RI", "Capacity", "Planning"]
     
     // Calculate cumulative positions for waterfall effect
     let cumulative = 0
-    const data: { name: string; start: number; value: number; fill: string; isTotal: boolean; label: number }[] = []
+    const data: { name: string; range: [number, number]; fill: string; label: number }[] = []
     
-    // First: Total bar (full width, gray)
-    data.push({ name: "Total At-Risk", start: 0, value: total, fill: "#6B7280", isTotal: true, label: total })
-    
-    // Driver breakdown bars - floating on top of previous
+    // Driver breakdown bars - each starts where previous ended (floating effect)
     drivers.forEach(driver => {
       const count = driverCounts[driver]
+      const start = cumulative
+      const end = cumulative + count
       data.push({ 
         name: driver, 
-        start: cumulative, 
-        value: count, 
+        range: [start, end],
         fill: DRIVER_COLORS[driver], 
-        isTotal: false,
         label: count 
       })
-      cumulative += count
+      cumulative = end
     })
     
-    return data
+    return { data, total }
   }, [atRiskDeliveries, driverCounts])
 
   // Responsibility split (by escalateTo)
@@ -638,7 +635,7 @@ export function OTDTracking() {
 
               {/* Charts */}
               <div className="grid grid-cols-2 gap-4">
-                {/* Driver Waterfall - TRUE waterfall with floating stacked bars */}
+                {/* Driver Waterfall - TRUE floating bar waterfall */}
                 <Card className="border border-gray-200">
                   <CardHeader className="py-3 px-4">
                     <CardTitle className="text-sm font-semibold">Driver Waterfall (Breakdown)</CardTitle>
@@ -647,15 +644,15 @@ export function OTDTracking() {
                     <div className="h-[200px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart 
-                          data={driverWaterfallData.filter(d => !d.isTotal)} 
+                          data={driverWaterfallData.data} 
                           layout="vertical"
-                          barCategoryGap="20%"
+                          barCategoryGap="25%"
                         >
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis 
                             type="number" 
                             tick={{ fontSize: 11 }} 
-                            domain={[0, 'auto']}
+                            domain={[0, driverWaterfallData.total]}
                           />
                           <YAxis 
                             dataKey="name" 
@@ -664,14 +661,15 @@ export function OTDTracking() {
                             tick={{ fontSize: 10 }}
                           />
                           <Tooltip 
-                            formatter={(value: number, name: string) => [value, "At-Risk Deliveries"]}
+                            formatter={(value: [number, number], name: string, props: any) => {
+                              const count = props.payload.label
+                              return [`${count} deliveries (${props.payload.range[0]} → ${props.payload.range[1]})`, "At-Risk"]
+                            }}
                             labelFormatter={(label) => `Driver: ${label}`}
                           />
-                          {/* Invisible spacer bar for waterfall effect */}
-                          <Bar dataKey="start" stackId="waterfall" fill="transparent" />
-                          {/* Actual value bar - colored by driver */}
-                          <Bar dataKey="value" stackId="waterfall" radius={[0, 4, 4, 0]}>
-                            {driverWaterfallData.filter(d => !d.isTotal).map((entry, index) => (
+                          {/* Single Bar with range array [start, end] for floating effect */}
+                          <Bar dataKey="range" radius={[0, 4, 4, 0]}>
+                            {driverWaterfallData.data.map((entry, index) => (
                               <Cell key={`cell-${index}`} fill={entry.fill} />
                             ))}
                           </Bar>
@@ -679,9 +677,9 @@ export function OTDTracking() {
                       </ResponsiveContainer>
                     </div>
                     <div className="flex items-center justify-between mt-2 px-1 text-xs">
-                      <span className="text-gray-500">Total At-Risk: <span className="font-bold text-gray-800">{driverWaterfallData[0]?.label || 0}</span></span>
+                      <span className="text-gray-500">Total At-Risk: <span className="font-bold text-gray-800">{driverWaterfallData.total}</span></span>
                       <div className="flex gap-2">
-                        {driverWaterfallData.filter(d => !d.isTotal).map(d => (
+                        {driverWaterfallData.data.map(d => (
                           <span key={d.name} className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: d.fill }} />
                             <span className="text-gray-600">{d.label}</span>
