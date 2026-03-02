@@ -29,6 +29,7 @@ import { SIOPDashboard } from "@/components/tabs/siop"
 import { OpsUnitCost } from "@/components/tabs/ops-unit-cost"
 import { OpsShopFloor } from "@/components/tabs/ops-shop-floor"
 import { OpsEnterpriseIntel } from "@/components/tabs/ops-enterprise-intel"
+import { OTDTracking } from "@/components/tabs/otd-tracking"
 
 export type TabId =
   | "standard-cost"
@@ -57,6 +58,7 @@ export type TabId =
   | "ops-unit-cost"
   | "ops-shop-floor"
   | "ops-enterprise-intel"
+  | "otd-tracking"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -105,6 +107,7 @@ export default function Home() {
           {activeTab === "ops-unit-cost" && <OpsUnitCost />}
           {activeTab === "ops-shop-floor" && <OpsShopFloor />}
           {activeTab === "ops-enterprise-intel" && <OpsEnterpriseIntel />}
+          {activeTab === "otd-tracking" && <OTDTracking />}
         </main>
       </div>
     </div>

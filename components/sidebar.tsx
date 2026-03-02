@@ -50,6 +50,12 @@ const sections: SidebarSection[] = [
       { id: "ops-enterprise-intel", label: "Enterprise Intelligence" },
     ],
   },
+  {
+    title: "OTD Tracking",
+    tabs: [
+      { id: "otd-tracking", label: "OTD Tracking" },
+    ],
+  },
 ]
 
 type SidebarProps = {
