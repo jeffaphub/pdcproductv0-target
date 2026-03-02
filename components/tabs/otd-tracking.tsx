@@ -101,6 +101,16 @@ export function OTDTracking() {
   const [pmActiveOwnerTab, setPmActiveOwnerTab] = useState<string>("Supply Chain/Buyer")
   const [pmShowMissingDates, setPmShowMissingDates] = useState(false)
 
+  // Planner-specific state
+  const [plannerSelectedPlanner, setPlannerSelectedPlanner] = useState<string>("all")
+  const [plannerSelectedSite, setPlannerSelectedSite] = useState<string>("all")
+  const [plannerSelectedProgram, setPlannerSelectedProgram] = useState<string>("all")
+  const [plannerSelectedWorkcenter, setPlannerSelectedWorkcenter] = useState<string>("all")
+  const [plannerTimeFence, setPlannerTimeFence] = useState<"0-14" | "15-30" | "31-60" | "60+">("0-14")
+  const [plannerExceptionsOnly, setPlannerExceptionsOnly] = useState(true)
+  const [plannerBlockerFilter, setPlannerBlockerFilter] = useState<{ type: "capacity" | "mrb" | "supply"; value: string } | null>(null)
+  const [plannerIntentAnnotations, setPlannerIntentAnnotations] = useState<Record<string, "intentional" | "needs-review">>({})
+
   // Global Filters
   const [selectedSites, setSelectedSites] = useState<string[]>([])
   const [selectedPrograms, setSelectedPrograms] = useState<string[]>([])
@@ -856,6 +866,140 @@ export function OTDTracking() {
     })
     return buckets
   }, [planAlignmentData])
+
+  // ===== PLANNER TAB DATA =====
+  // Planner names (mock)
+  const plannerNames = ["All Planners", "D. Martinez", "K. Thompson", "R. Patel", "L. Anderson"]
+  // Workcenters from data
+  const workcenters = [...new Set(allDeliveries.map(d => d.workcenter).filter(Boolean))] as string[]
+  
+  // Planner Work Queue - filtered by planner scope
+  const plannerWorkQueue = useMemo(() => {
+    const now = Date.now()
+    let result = allDeliveries.map(d => {
+      const daysToContract = Math.floor((d.contractDate.getTime() - now) / (24 * 60 * 60 * 1000))
+      const planDelta = d.deliveryPlanDate ? Math.floor((d.deliveryPlanDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : 0
+      const expectedDelta = d.expectedDate ? Math.floor((d.expectedDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : 0
+      
+      // Determine status based on deltas
+      let status: "On-track" | "At-risk" | "Late" = "On-track"
+      if (daysToContract < 0 && !d.actualDate) status = "Late"
+      else if (expectedDelta > 7 || planDelta > 7) status = "At-risk"
+      
+      // Recommended action based on driver
+      let recommendedAction = "Monitor"
+      if (status === "Late") recommendedAction = "Escalate immediately"
+      else if (d.driver === "Supply") recommendedAction = "Expedite with supplier"
+      else if (d.driver === "MRB/RI") recommendedAction = "Prioritize MRB disposition"
+      else if (d.driver === "Factory") recommendedAction = "Reallocate resources"
+      else if (d.driver === "Planning") recommendedAction = "Resequence/replan"
+      
+      // Intent flag - check annotations or default
+      const intentStatus = plannerIntentAnnotations[d.id] || (planDelta > 0 ? "needs-review" : undefined)
+      
+      return {
+        ...d,
+        daysToContract,
+        planDelta,
+        expectedDelta,
+        status,
+        recommendedAction,
+        intentStatus,
+        isException: status !== "On-track" || Math.abs(planDelta) > 7 || Math.abs(expectedDelta) > 7,
+      }
+    })
+    
+    // Apply planner scope filters
+    if (plannerSelectedSite !== "all") result = result.filter(d => d.site === plannerSelectedSite)
+    if (plannerSelectedProgram !== "all") result = result.filter(d => d.program === plannerSelectedProgram)
+    if (plannerSelectedWorkcenter !== "all") result = result.filter(d => d.workcenter === plannerSelectedWorkcenter)
+    
+    // Apply time fence filter
+    if (plannerTimeFence === "0-14") result = result.filter(d => d.daysToContract >= 0 && d.daysToContract <= 14)
+    else if (plannerTimeFence === "15-30") result = result.filter(d => d.daysToContract >= 15 && d.daysToContract <= 30)
+    else if (plannerTimeFence === "31-60") result = result.filter(d => d.daysToContract >= 31 && d.daysToContract <= 60)
+    else if (plannerTimeFence === "60+") result = result.filter(d => d.daysToContract > 60)
+    
+    // Apply exceptions only filter
+    if (plannerExceptionsOnly) result = result.filter(d => d.isException)
+    
+    // Apply blocker filter if set
+    if (plannerBlockerFilter) {
+      if (plannerBlockerFilter.type === "capacity") result = result.filter(d => d.driver === "Factory" && d.workcenter === plannerBlockerFilter.value)
+      else if (plannerBlockerFilter.type === "mrb") result = result.filter(d => d.driver === "MRB/RI" && (d.mrbStep === plannerBlockerFilter.value || d.mrbReason === plannerBlockerFilter.value))
+      else if (plannerBlockerFilter.type === "supply") result = result.filter(d => d.driver === "Supply" && d.supplier === plannerBlockerFilter.value)
+    }
+    
+    // Sort: days to contract ascending, then biggest behind delta
+    return result.sort((a, b) => a.daysToContract - b.daysToContract || b.expectedDelta - a.expectedDelta)
+  }, [allDeliveries, plannerSelectedSite, plannerSelectedProgram, plannerSelectedWorkcenter, plannerTimeFence, plannerExceptionsOnly, plannerBlockerFilter, plannerIntentAnnotations])
+  
+  // Plan Alignment Matrix - top 25 most urgent from work queue
+  const plannerAlignmentMatrix = useMemo(() => {
+    return plannerWorkQueue.slice(0, 25).map(d => {
+      const iopDelta = d.iopDate ? Math.floor((d.iopDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : null
+      const planDelta = d.deliveryPlanDate ? Math.floor((d.deliveryPlanDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : null
+      const pdmDelta = d.pdmForecastDate ? Math.floor((d.pdmForecastDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : null
+      const expectedDelta = d.expectedDate ? Math.floor((d.expectedDate.getTime() - d.contractDate.getTime()) / (24 * 60 * 60 * 1000)) : null
+      return { ...d, iopDelta, planDelta, pdmDelta, expectedDelta }
+    })
+  }, [plannerWorkQueue])
+  
+  // Blocker aggregations for "Why behind?" panels
+  const plannerBlockers = useMemo(() => {
+    const exceptionsOnly = plannerWorkQueue.filter(d => d.isException)
+    
+    // Capacity blockers by workcenter
+    const capacityMap = new Map<string, { count: number; slipDays: number }>()
+    exceptionsOnly.filter(d => d.driver === "Factory" && d.workcenter).forEach(d => {
+      const wc = d.workcenter!
+      const existing = capacityMap.get(wc) || { count: 0, slipDays: 0 }
+      existing.count++
+      existing.slipDays += Math.max(0, d.expectedDelta)
+      capacityMap.set(wc, existing)
+    })
+    const capacityBlockers = Array.from(capacityMap.entries())
+      .map(([workcenter, data]) => ({ workcenter, ...data }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+    
+    // MRB blockers by step/reason
+    const mrbMap = new Map<string, number>()
+    exceptionsOnly.filter(d => d.driver === "MRB/RI").forEach(d => {
+      const key = d.mrbStep || d.mrbReason || "Unknown"
+      mrbMap.set(key, (mrbMap.get(key) || 0) + 1)
+    })
+    const mrbBlockers = Array.from(mrbMap.entries())
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+    
+    // Supply blockers by supplier
+    const supplyMap = new Map<string, { count: number; poLines: Set<string> }>()
+    exceptionsOnly.filter(d => d.driver === "Supply").forEach(d => {
+      const existing = supplyMap.get(d.supplier) || { count: 0, poLines: new Set<string>() }
+      existing.count++
+      existing.poLines.add(d.poNumber)
+      supplyMap.set(d.supplier, existing)
+    })
+    const supplyBlockers = Array.from(supplyMap.entries())
+      .map(([supplier, data]) => ({ supplier, count: data.count, poLines: data.poLines.size }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+    
+    return { capacityBlockers, mrbBlockers, supplyBlockers }
+  }, [plannerWorkQueue])
+  
+  // Planner KPIs
+  const plannerKpis = useMemo(() => {
+    const total = plannerWorkQueue.length
+    const exceptions = plannerWorkQueue.filter(d => d.isException).length
+    const late = plannerWorkQueue.filter(d => d.status === "Late").length
+    const atRisk = plannerWorkQueue.filter(d => d.status === "At-risk").length
+    const behindContract = plannerWorkQueue.filter(d => d.planDelta > 0).length
+    const avgDelta = total > 0 ? Math.round(plannerWorkQueue.reduce((s, d) => s + d.expectedDelta, 0) / total) : 0
+    return { total, exceptions, late, atRisk, behindContract, avgDelta }
+  }, [plannerWorkQueue])
 
   // PO lines with deliveries protected
   const poLinesEnhanced = useMemo(() => {
@@ -2263,128 +2407,360 @@ export function OTDTracking() {
             </div>
           )}
 
-          {/* ===== PLANNER ===== */}
+          {/* ===== PLANNER TAB - Production Control Planner View ===== */}
           {activeSubTab === "planner" && (
-            <>
-              {/* KPIs + Threshold Slider */}
-              <div className="flex gap-4 items-start">
-                <div className="grid grid-cols-4 gap-3 flex-1">
-                  {[
-                    { label: "Ahead of Contract", value: planAlignmentData.filter(d => d.planDelta < 0).length, color: "text-green-600" },
-                    { label: "Behind Contract", value: planAlignmentData.filter(d => d.planDelta > 0).length, color: "text-red-600" },
-                    { label: "Avg Delta Days", value: Math.round(planAlignmentData.reduce((s, d) => s + Math.abs(d.planDelta), 0) / planAlignmentData.length), color: "text-orange-600" },
-                    { label: "Beyond Threshold", value: planAlignmentData.filter(d => Math.abs(d.planDelta) > deltaThreshold[0]).length, color: "text-purple-600" },
-                  ].map((kpi, i) => (
-                    <Card key={i} className="border border-gray-200">
-                      <CardContent className="p-3">
-                        <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">{kpi.label}</p>
-                        <p className={`text-xl font-bold mt-0.5 ${kpi.color}`}>{kpi.value}</p>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-                <Card className="border border-gray-200 w-48">
-                  <CardContent className="p-3">
-                    <p className="text-[10px] font-medium text-gray-500 uppercase mb-2">Threshold (days)</p>
-                    <Slider value={deltaThreshold} onValueChange={setDeltaThreshold} min={1} max={30} step={1} className="mt-1" />
-                    <p className="text-center text-sm font-bold mt-1">{deltaThreshold[0]} days</p>
+            <div className="space-y-5">
+              {/* Planner Scope Controls */}
+              <Card className="border border-gray-200 bg-gray-50/50">
+                <CardContent className="p-4">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-700">Planner:</span>
+                      <Select value={plannerSelectedPlanner} onValueChange={setPlannerSelectedPlanner}>
+                        <SelectTrigger className="w-[160px] h-9 text-sm"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Planners</SelectItem>
+                          {plannerNames.slice(1).map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-700">Site:</span>
+                      <Select value={plannerSelectedSite} onValueChange={setPlannerSelectedSite}>
+                        <SelectTrigger className="w-[140px] h-9 text-sm"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Sites</SelectItem>
+                          {sites.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-700">Program:</span>
+                      <Select value={plannerSelectedProgram} onValueChange={setPlannerSelectedProgram}>
+                        <SelectTrigger className="w-[160px] h-9 text-sm"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Programs</SelectItem>
+                          {programs.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-700">Workcenter:</span>
+                      <Select value={plannerSelectedWorkcenter} onValueChange={setPlannerSelectedWorkcenter}>
+                        <SelectTrigger className="w-[140px] h-9 text-sm"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All WCs</SelectItem>
+                          {workcenters.map(w => <SelectItem key={w} value={w}>{w}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-1 ml-auto">
+                      <span className="text-sm font-medium text-gray-700 mr-2">Time Fence:</span>
+                      {(["0-14", "15-30", "31-60", "60+"] as const).map(tf => (
+                        <Button
+                          key={tf}
+                          variant={plannerTimeFence === tf ? "default" : "outline"}
+                          size="sm"
+                          className="h-8 px-3 text-xs"
+                          onClick={() => setPlannerTimeFence(tf)}
+                        >
+                          {tf === "60+" ? "60+" : tf}d
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="exceptions-only"
+                        checked={plannerExceptionsOnly}
+                        onCheckedChange={(c) => setPlannerExceptionsOnly(c === true)}
+                      />
+                      <label htmlFor="exceptions-only" className="text-sm font-medium text-gray-700 cursor-pointer">
+                        Exceptions only
+                      </label>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* KPIs Row */}
+              <div className="grid grid-cols-6 gap-3">
+                {[
+                  { label: "Jobs in Scope", value: plannerKpis.total, color: "text-gray-800" },
+                  { label: "Exceptions", value: plannerKpis.exceptions, color: "text-orange-600" },
+                  { label: "Late", value: plannerKpis.late, color: "text-red-600" },
+                  { label: "At-Risk", value: plannerKpis.atRisk, color: "text-amber-600" },
+                  { label: "Behind Contract", value: plannerKpis.behindContract, color: "text-red-500" },
+                  { label: "Avg Delta (days)", value: plannerKpis.avgDelta > 0 ? `+${plannerKpis.avgDelta}` : plannerKpis.avgDelta, color: plannerKpis.avgDelta > 0 ? "text-red-600" : "text-green-600" },
+                ].map((kpi, i) => (
+                  <Card key={i} className="border border-gray-200">
+                    <CardContent className="p-3">
+                      <p className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">{kpi.label}</p>
+                      <p className={`text-2xl font-bold mt-0.5 ${kpi.color}`}>{kpi.value}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {/* Definition callout */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-sm text-blue-800">
+                <strong>Delta Days</strong> = (Plan Source Date) minus (Contract Date). <span className="text-green-700 font-medium">Negative = Ahead</span>, <span className="text-red-700 font-medium">Positive = Behind</span>.
+              </div>
+
+              {/* "Why Behind?" Blocker Panels */}
+              <div className="grid grid-cols-3 gap-4">
+                {/* Capacity Blockers */}
+                <Card className="border border-gray-200">
+                  <CardHeader className="py-3 px-4 bg-purple-50 border-b border-purple-100">
+                    <CardTitle className="text-sm font-bold text-purple-800 flex items-center gap-2">
+                      <Activity className="w-4 h-4" /> Factory Blockers
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="divide-y divide-gray-100">
+                      {plannerBlockers.capacityBlockers.length === 0 && (
+                        <p className="p-4 text-sm text-gray-400 text-center">No factory blockers</p>
+                      )}
+                      {plannerBlockers.capacityBlockers.map(b => (
+                        <div
+                          key={b.workcenter}
+                          className={`flex items-center justify-between p-3 cursor-pointer hover:bg-purple-50 ${plannerBlockerFilter?.type === "capacity" && plannerBlockerFilter.value === b.workcenter ? "bg-purple-100" : ""}`}
+                          onClick={() => setPlannerBlockerFilter(plannerBlockerFilter?.type === "capacity" && plannerBlockerFilter.value === b.workcenter ? null : { type: "capacity", value: b.workcenter })}
+                        >
+                          <span className="text-sm font-medium text-gray-800">{b.workcenter}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs text-gray-500">{b.slipDays}d slip</span>
+                            <Badge variant="secondary" className="text-xs">{b.count} jobs</Badge>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* MRB Blockers */}
+                <Card className="border border-gray-200">
+                  <CardHeader className="py-3 px-4 bg-orange-50 border-b border-orange-100">
+                    <CardTitle className="text-sm font-bold text-orange-800 flex items-center gap-2">
+                      <FileText className="w-4 h-4" /> MRB Blockers
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="divide-y divide-gray-100">
+                      {plannerBlockers.mrbBlockers.length === 0 && (
+                        <p className="p-4 text-sm text-gray-400 text-center">No MRB blockers</p>
+                      )}
+                      {plannerBlockers.mrbBlockers.map(b => (
+                        <div
+                          key={b.reason}
+                          className={`flex items-center justify-between p-3 cursor-pointer hover:bg-orange-50 ${plannerBlockerFilter?.type === "mrb" && plannerBlockerFilter.value === b.reason ? "bg-orange-100" : ""}`}
+                          onClick={() => setPlannerBlockerFilter(plannerBlockerFilter?.type === "mrb" && plannerBlockerFilter.value === b.reason ? null : { type: "mrb", value: b.reason })}
+                        >
+                          <span className="text-sm font-medium text-gray-800">{b.reason}</span>
+                          <Badge variant="secondary" className="text-xs">{b.count} jobs</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Supply Blockers */}
+                <Card className="border border-gray-200">
+                  <CardHeader className="py-3 px-4 bg-blue-50 border-b border-blue-100">
+                    <CardTitle className="text-sm font-bold text-blue-800 flex items-center gap-2">
+                      <Truck className="w-4 h-4" /> Supply Blockers
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="divide-y divide-gray-100">
+                      {plannerBlockers.supplyBlockers.length === 0 && (
+                        <p className="p-4 text-sm text-gray-400 text-center">No supply blockers</p>
+                      )}
+                      {plannerBlockers.supplyBlockers.map(b => (
+                        <div
+                          key={b.supplier}
+                          className={`flex items-center justify-between p-3 cursor-pointer hover:bg-blue-50 ${plannerBlockerFilter?.type === "supply" && plannerBlockerFilter.value === b.supplier ? "bg-blue-100" : ""}`}
+                          onClick={() => setPlannerBlockerFilter(plannerBlockerFilter?.type === "supply" && plannerBlockerFilter.value === b.supplier ? null : { type: "supply", value: b.supplier })}
+                        >
+                          <span className="text-sm font-medium text-gray-800 truncate max-w-[140px]">{b.supplier}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500">{b.poLines} POs</span>
+                            <Badge variant="secondary" className="text-xs">{b.count} jobs</Badge>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </CardContent>
                 </Card>
               </div>
 
-              {/* Delta Histogram */}
-              <Card className="border border-gray-200">
-                <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm font-semibold">Delta Days Distribution (Plan vs Contract)</CardTitle>
-                </CardHeader>
-                <CardContent className="px-4 pb-4">
-                  <div className="h-[180px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={deltaHistogram}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="range" tick={{ fontSize: 10 }} />
-                        <YAxis tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                          {deltaHistogram.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.type === "ahead" ? "#10B981" : entry.type === "behind" ? "#EF4444" : "#6B7280"} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
+              {/* Active filter indicator */}
+              {plannerBlockerFilter && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <span className="text-sm text-yellow-800">
+                    Filtered by: <strong>{plannerBlockerFilter.type === "capacity" ? "Factory" : plannerBlockerFilter.type === "mrb" ? "MRB" : "Supply"}</strong> — {plannerBlockerFilter.value}
+                  </span>
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setPlannerBlockerFilter(null)}>
+                    Clear
+                  </Button>
+                </div>
+              )}
 
-              {/* Dumbbell Chart (approximated as range bar) */}
+              {/* Plan Alignment Matrix */}
               <Card className="border border-gray-200">
-                <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm font-semibold">Contract vs Plan Alignment (Top 20 by Delta)</CardTitle>
-                </CardHeader>
-                <CardContent className="px-4 pb-4">
-                  <div className="space-y-1">
-                    {planAlignmentData.filter(d => Math.abs(d.planDelta) > deltaThreshold[0]).slice(0, 15).map(d => (
-                      <div key={d.id} className="flex items-center gap-2 py-1 hover:bg-gray-50 cursor-pointer" onClick={() => handleRowClick(d)}>
-                        <span className="w-24 text-xs text-gray-600 truncate">{d.clin}</span>
-                        <div className="flex-1 relative h-5 bg-gray-100 rounded">
-                          {/* Contract marker (baseline) */}
-                          <div className="absolute top-0 bottom-0 w-0.5 bg-gray-800" style={{ left: "50%" }} />
-                          {/* Plan delta bar */}
-                          <div
-                            className={`absolute top-1 bottom-1 rounded ${d.planDelta > 0 ? "bg-red-400" : "bg-green-400"}`}
-                            style={{
-                              left: d.planDelta > 0 ? "50%" : `${50 + (d.planDelta / 60) * 50}%`,
-                              width: `${Math.min(Math.abs(d.planDelta) / 60 * 50, 50)}%`,
-                            }}
-                          />
-                        </div>
-                        <span className={`w-12 text-xs font-medium text-right ${d.planDelta > 0 ? "text-red-600" : "text-green-600"}`}>
-                          {d.planDelta > 0 ? "+" : ""}{d.planDelta}d
-                        </span>
-                        <Badge variant="outline" className="text-[8px] w-24 justify-center">{d.intentFlag}</Badge>
-                      </div>
-                    ))}
+                <CardHeader className="py-3 px-4 border-b border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base font-bold text-gray-800">Plan Alignment Matrix</CardTitle>
+                      <p className="text-sm text-gray-500 mt-0.5">Top 25 most urgent jobs — click a cell to filter work queue</p>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="flex items-center gap-1"><span className="w-3 h-3 bg-green-100 border border-green-300 rounded" /> Ahead</span>
+                      <span className="flex items-center gap-1"><span className="w-3 h-3 bg-gray-100 border border-gray-300 rounded" /> On Time</span>
+                      <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-100 border border-red-300 rounded" /> Behind</span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-center gap-4 mt-3 text-xs text-gray-500">
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 bg-green-400 rounded" /> Ahead</span>
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 bg-gray-800 rounded" /> Contract</span>
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 bg-red-400 rounded" /> Behind</span>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Misalignment Table */}
-              <Card className="border border-gray-200">
-                <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm font-semibold">Plan Misalignments (Beyond {deltaThreshold[0]}d)</CardTitle>
                 </CardHeader>
-                <CardContent className="px-4 pb-4">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-gray-50">
-                        {["CLIN", "Program", "Contract", "IOP", "Plan", "Delta", "Intent Flag", "Correction"].map(h => (
-                          <TableHead key={h} className="text-[10px] font-semibold py-2">{h}</TableHead>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="bg-gray-50 border-b border-gray-200">
+                          <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Job/CLIN</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Program</th>
+                          <th className="text-center p-3 text-xs font-bold text-gray-700 whitespace-nowrap">Contract</th>
+                          <th className="text-center p-3 text-xs font-bold text-gray-700 whitespace-nowrap bg-blue-50">IOP Date</th>
+                          <th className="text-center p-3 text-xs font-bold text-gray-700 whitespace-nowrap bg-blue-50">Delivery Plan</th>
+                          <th className="text-center p-3 text-xs font-bold text-gray-700 whitespace-nowrap bg-blue-50">PDM Forecast</th>
+                          <th className="text-center p-3 text-xs font-bold text-gray-700 whitespace-nowrap bg-blue-50">Expected Ship</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {plannerAlignmentMatrix.slice(0, 15).map(d => (
+                          <tr key={d.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleRowClick(d)}>
+                            <td className="p-3 text-sm font-medium text-gray-800">{d.clin}</td>
+                            <td className="p-3 text-sm text-gray-600">{d.program}</td>
+                            <td className="p-3 text-center text-sm text-gray-700 font-medium">{fmtDate(d.contractDate)}</td>
+                            <td className={`p-3 text-center text-sm font-medium ${d.iopDelta === null ? "text-gray-400" : d.iopDelta < 0 ? "bg-green-50 text-green-700" : d.iopDelta > 0 ? "bg-red-50 text-red-700" : "bg-gray-50 text-gray-600"}`}>
+                              {d.iopDelta !== null ? (d.iopDelta > 0 ? `+${d.iopDelta}` : d.iopDelta) : "—"}
+                            </td>
+                            <td className={`p-3 text-center text-sm font-medium ${d.planDelta === null ? "text-gray-400" : d.planDelta < 0 ? "bg-green-50 text-green-700" : d.planDelta > 0 ? "bg-red-50 text-red-700" : "bg-gray-50 text-gray-600"}`}>
+                              {d.planDelta !== null ? (d.planDelta > 0 ? `+${d.planDelta}` : d.planDelta) : "—"}
+                            </td>
+                            <td className={`p-3 text-center text-sm font-medium ${d.pdmDelta === null ? "text-gray-400" : d.pdmDelta < 0 ? "bg-green-50 text-green-700" : d.pdmDelta > 0 ? "bg-red-50 text-red-700" : "bg-gray-50 text-gray-600"}`}>
+                              {d.pdmDelta !== null ? (d.pdmDelta > 0 ? `+${d.pdmDelta}` : d.pdmDelta) : "—"}
+                            </td>
+                            <td className={`p-3 text-center text-sm font-medium ${d.expectedDelta === null ? "text-gray-400" : d.expectedDelta < 0 ? "bg-green-50 text-green-700" : d.expectedDelta > 0 ? "bg-red-50 text-red-700" : "bg-gray-50 text-gray-600"}`}>
+                              {d.expectedDelta !== null ? (d.expectedDelta > 0 ? `+${d.expectedDelta}` : d.expectedDelta) : "—"}
+                            </td>
+                          </tr>
                         ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {planAlignmentData.filter(d => Math.abs(d.planDelta) > deltaThreshold[0]).slice(0, 12).map(d => (
-                        <TableRow key={d.id} className="cursor-pointer hover:bg-blue-50" onClick={() => handleRowClick(d)}>
-                          <TableCell className="text-xs font-medium py-2">{d.clin}</TableCell>
-                          <TableCell className="text-xs py-2">{d.program}</TableCell>
-                          <TableCell className="text-xs py-2">{fmtDate(d.contractDate)}</TableCell>
-                          <TableCell className="text-xs py-2">{fmtDate(d.iopDate)}</TableCell>
-                          <TableCell className="text-xs py-2">{fmtDate(d.deliveryPlanDate)}</TableCell>
-                          <TableCell className={`text-xs font-medium py-2 ${d.planDelta > 0 ? "text-red-600" : "text-green-600"}`}>{d.planDelta > 0 ? "+" : ""}{d.planDelta}d</TableCell>
-                          <TableCell className="py-2"><Badge variant={d.intentFlag.includes("Behind") ? "destructive" : "secondary"} className="text-[9px]">{d.intentFlag}</Badge></TableCell>
-                          <TableCell className="text-xs text-blue-600 py-2">{d.correction}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </tbody>
+                    </table>
+                  </div>
                 </CardContent>
               </Card>
-            </>
+
+              {/* Planner Work Queue (Exceptions) - PRIMARY TABLE */}
+              <Card className="border-2 border-gray-300">
+                <CardHeader className="py-4 px-5 border-b border-gray-200 bg-gray-50">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg font-bold text-gray-900">Planner Work Queue {plannerExceptionsOnly ? "(Exceptions)" : "(All)"}</CardTitle>
+                      <p className="text-sm text-gray-500 mt-0.5">
+                        {plannerWorkQueue.length} jobs in scope — sorted by days to contract, then biggest behind delta
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" className="h-8">
+                        <Download className="w-4 h-4 mr-1" /> Export
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto max-h-[500px]">
+                    <table className="w-full">
+                      <thead className="sticky top-0 bg-gray-100 z-10">
+                        <tr className="border-b border-gray-200">
+                          {["Job/CLIN", "Program", "Site", "Workcenter", "Contract", "Plan Date", "Expected", "Delta (Plan)", "Delta (Exp)", "Status", "Driver", "Reason", "Recommended Action", "Intent"].map(h => (
+                            <th key={h} className="text-left p-3 text-xs font-bold text-gray-700 whitespace-nowrap">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {plannerWorkQueue.slice(0, 50).map(d => (
+                          <tr key={d.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(d)}>
+                            <td className="p-3 text-sm font-semibold text-gray-900">{d.clin}</td>
+                            <td className="p-3 text-sm text-gray-700">{d.program}</td>
+                            <td className="p-3 text-sm text-gray-600">{d.site}</td>
+                            <td className="p-3 text-sm text-blue-600 font-medium">{d.workcenter || "—"}</td>
+                            <td className="p-3 text-sm text-gray-700 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
+                            <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{d.deliveryPlanDate ? fmtDate(d.deliveryPlanDate) : "—"}</td>
+                            <td className="p-3 text-sm text-gray-600 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
+                            <td className={`p-3 text-sm font-bold ${d.planDelta < 0 ? "text-green-600" : d.planDelta > 0 ? "text-red-600" : "text-gray-500"}`}>
+                              {d.planDelta > 0 ? `+${d.planDelta}` : d.planDelta}d
+                            </td>
+                            <td className={`p-3 text-sm font-bold ${d.expectedDelta < 0 ? "text-green-600" : d.expectedDelta > 0 ? "text-red-600" : "text-gray-500"}`}>
+                              {d.expectedDelta > 0 ? `+${d.expectedDelta}` : d.expectedDelta}d
+                            </td>
+                            <td className="p-3">
+                              <Badge variant={d.status === "Late" ? "destructive" : d.status === "At-risk" ? "default" : "secondary"} className="text-[10px]">
+                                {d.status}
+                              </Badge>
+                            </td>
+                            <td className="p-3">
+                              <span className={`text-xs font-medium px-2 py-1 rounded ${
+                                d.driver === "Supply" ? "bg-blue-100 text-blue-700" :
+                                d.driver === "MRB/RI" ? "bg-orange-100 text-orange-700" :
+                                d.driver === "Factory" ? "bg-purple-100 text-purple-700" :
+                                "bg-green-100 text-green-700"
+                              }`}>
+                                {d.driver}
+                              </span>
+                            </td>
+                            <td className="p-3 text-xs text-gray-500 max-w-[120px] truncate" title={d.factoryReason || d.mrbReason || d.planningReason || "—"}>
+                              {d.factoryReason || d.mrbReason || d.planningReason || "—"}
+                            </td>
+                            <td className="p-3 text-xs text-blue-600 font-medium whitespace-nowrap">{d.recommendedAction}</td>
+                            <td className="p-3">
+                              {d.intentStatus === "needs-review" ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-6 px-2 text-[10px] text-amber-600 border-amber-300 hover:bg-amber-50"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setPlannerIntentAnnotations(prev => ({ ...prev, [d.id]: "intentional" }))
+                                  }}
+                                >
+                                  Needs Review
+                                </Button>
+                              ) : d.intentStatus === "intentional" ? (
+                                <Badge variant="outline" className="text-[10px] text-green-600 border-green-300">Intentional</Badge>
+                              ) : (
+                                <span className="text-xs text-gray-400">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {plannerWorkQueue.length === 0 && (
+                          <tr>
+                            <td colSpan={14} className="p-8 text-center text-gray-400">
+                              No jobs match the current filters
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  {plannerWorkQueue.length > 50 && (
+                    <div className="py-3 px-5 border-t border-gray-100 text-center bg-gray-50">
+                      <span className="text-sm text-gray-500">Showing 50 of {plannerWorkQueue.length} jobs</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           )}
 
           {/* ===== SUPPLY CHAIN ===== */}
