@@ -54,6 +54,7 @@ const sections: SidebarSection[] = [
     title: "OTD Tracking",
     tabs: [
       { id: "otd-tracking", label: "OTD Tracking" },
+      { id: "shelf-life", label: "Part Shelf-Life Tracking" },
     ],
   },
 ]
