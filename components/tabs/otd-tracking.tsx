@@ -70,12 +70,11 @@ export function OTDTracking() {
   const [chartFilter, setChartFilter] = useState<{ driver?: DriverCategory; program?: string; supplier?: string } | null>(null)
   const [driverFilter, setDriverFilter] = useState<DriverCategory | null>(null)
 
-  // Program Manager → Programs mapping config
+  // Program Manager → Programs mapping config (uses actual program names from data)
   const programManagerMapping: Record<string, string[]> = {
-    "John Smith": ["F-35", "F-22", "C-130"],
-    "Sarah Johnson": ["Apache", "Chinook", "Black Hawk"],
-    "Mike Chen": ["Global Hawk", "Predator", "MQ-9"],
-    "Emily Davis": ["P-8", "KC-46", "E-7"],
+    "John Smith": ["Manpack Radio", "Vehicle Mount"],
+    "Sarah Johnson": ["Tactical HF Radio", "Base Station"],
+    "Mike Chen": ["Maritime HF", "Airborne UHF"],
   }
   const programManagers = Object.keys(programManagerMapping)
 
@@ -119,6 +118,7 @@ export function OTDTracking() {
   const supplyPct = atRiskDeliveries.length > 0 ? Math.round((driverCounts.Supply / atRiskDeliveries.length) * 100) : 0
 
   // PM Tab: Filtered deliveries based on PM scope controls
+  // NOTE: Uses absolute deltaDays instead of future-only dates since mock data has historical dates
   const pmFilteredDeliveries = useMemo(() => {
     let result = allDeliveries
     
@@ -133,11 +133,8 @@ export function OTDTracking() {
       result = result.filter(d => pmSelectedPrograms.includes(d.program))
     }
     
-    // Filter by horizon
-    result = result.filter(d => {
-      const daysToContract = Math.floor((d.contractDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
-      return daysToContract >= 0 && daysToContract <= pmHorizon
-    })
+    // Filter by horizon - use absolute delta days to work with mock data
+    result = result.filter(d => Math.abs(d.deltaDays) <= pmHorizon)
     
     // Filter by single selected program (deep dive)
     if (pmSelectedProgram) {
@@ -176,8 +173,9 @@ export function OTDTracking() {
       const existing = programMap.get(d.program) || { count: 0, nearestDue: 999, driverMix: { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }, hasCustomerRisk: false }
       existing.count++
       existing.driverMix[d.driver]++
-      const daysToContract = Math.max(0, Math.floor((d.contractDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
-      if (daysToContract < existing.nearestDue) existing.nearestDue = daysToContract
+      // Use deltaDays (can be negative for past-due items)
+      const urgency = Math.abs(d.deltaDays)
+      if (urgency < existing.nearestDue) existing.nearestDue = urgency
       if (d.escalateTo === "Customer" || d.severity === "Critical") existing.hasCustomerRisk = true
       programMap.set(d.program, existing)
     })
@@ -844,9 +842,9 @@ export function OTDTracking() {
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm font-semibold text-gray-900 truncate">{prog.program}</p>
-                                    <p className={`text-[10px] ${prog.nearestDue <= 7 ? "text-red-600 font-medium" : prog.nearestDue <= 14 ? "text-yellow-600" : "text-gray-500"}`}>
-                                      Nearest: {prog.nearestDue}d
-                                    </p>
+<p className={`text-[10px] ${prog.nearestDue <= 7 ? "text-red-600 font-medium" : prog.nearestDue <= 14 ? "text-yellow-600" : "text-gray-500"}`}>
+                                    Delta: {prog.nearestDue}d slip
+                                  </p>
                                   </div>
                                   <div className="flex flex-col items-end gap-1">
                                     <span className="text-lg font-bold text-gray-900">{prog.count}</span>
@@ -970,7 +968,10 @@ export function OTDTracking() {
                               </thead>
                               <tbody className="divide-y divide-gray-50">
                                 {ownerItems.slice(0, 5).map(d => {
-                                  const daysToContract = Math.max(0, Math.floor((d.contractDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+                                  // Use deltaDays - negative means past due, positive means ahead
+                                  const delta = d.deltaDays
+                                  const isLate = delta > 0
+                                  const urgency = Math.abs(delta)
                                   const evidenceTag = d.driver === "Supply" ? `PO ${d.poNumber}` 
                                     : d.driver === "MRB/RI" ? `MRB-${d.id.slice(-4)}`
                                     : d.driver === "Capacity" ? "WC constraint"
@@ -987,8 +988,8 @@ export function OTDTracking() {
                                     >
                                       <td className="p-2 font-medium">{d.program}</td>
                                       <td className="p-2 text-gray-600">{d.clin}</td>
-                                      <td className={`p-2 font-medium ${daysToContract <= 7 ? "text-red-600" : daysToContract <= 14 ? "text-yellow-600" : ""}`}>
-                                        {daysToContract}d
+                                      <td className={`p-2 font-medium ${isLate ? "text-red-600" : urgency <= 7 ? "text-yellow-600" : "text-gray-600"}`}>
+                                        {isLate ? `+${delta}d` : `${delta}d`}
                                       </td>
                                       <td className="p-2 text-gray-500 whitespace-nowrap">{fmtDate(d.contractDate)}</td>
                                       <td className="p-2 text-gray-500 whitespace-nowrap">{fmtDate(d.expectedDate)}</td>
