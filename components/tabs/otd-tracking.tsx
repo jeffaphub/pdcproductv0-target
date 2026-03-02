@@ -8,8 +8,9 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Slider } from "@/components/ui/slider"
+import { Checkbox } from "@/components/ui/checkbox"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, ComposedChart, Cell, ScatterChart, Scatter, ZAxis, ReferenceLine, ReferenceArea, Area, AreaChart } from "recharts"
-import { Calendar, Filter, Download, X, ChevronRight, ChevronDown, ChevronUp, AlertTriangle, Clock, Package, Users, TrendingUp, Activity, Target, Zap, ExternalLink, MessageSquare, FileText, RefreshCw } from "lucide-react"
+import { Calendar, Filter, Download, X, ChevronRight, ChevronDown, ChevronUp, AlertTriangle, Clock, Package, Users, TrendingUp, Activity, Target, Zap, ExternalLink, MessageSquare, FileText, RefreshCw, Truck } from "lucide-react"
 import { SupplierOTD } from "./supplier-otd"
 import {
   getOTDDeliveries,
