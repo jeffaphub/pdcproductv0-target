@@ -2776,7 +2776,7 @@ export function OTDTracking() {
 
       {/* ===== ENHANCED DRILL-DOWN DRAWER ===== */}
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
-        <SheetContent className="w-[550px] sm:w-[650px] overflow-y-auto">
+        <SheetContent className="w-[800px] sm:w-[900px] lg:w-[1000px] max-w-[90vw] overflow-y-auto">
           {selectedDelivery && (
             <>
               <SheetHeader>
