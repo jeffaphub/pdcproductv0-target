@@ -540,9 +540,9 @@ export function OTDTracking() {
 
   // PM: Driver chart data
   const pmDriverChartData = useMemo(() => {
-    const counts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
-    pmAtRiskDeliveries.forEach(d => counts[d.driver]++)
-    return (["Supply", "MRB/RI", "Capacity", "Planning"] as DriverCategory[]).map(driver => ({
+    const counts = { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 }
+    atRiskDeliveries.forEach(d => counts[d.driver]++)
+    return (["Supply", "MRB/RI", "Factory", "Planning"] as DriverCategory[]).map(driver => ({
       driver,
       count: counts[driver],
       fill: DRIVER_COLORS[driver],
@@ -740,7 +740,7 @@ export function OTDTracking() {
 
   // Chart data: At-Risk by Driver - single colored bars per driver
   const driverChartData = useMemo(() => {
-    const drivers: DriverCategory[] = ["Supply", "MRB/RI", "Capacity", "Planning"]
+    const drivers: DriverCategory[] = ["Supply", "MRB/RI", "Factory", "Planning"]
     return drivers.map(driver => {
       const driverItems = filteredDeliveries.filter(d => d.driver === driver)
       const atRiskCount = driverItems.filter(d => d.otdStatus === "At-Risk" || d.otdStatus === "Late").length
@@ -774,14 +774,14 @@ export function OTDTracking() {
 
   // Program risk data (stacked by driver)
   const programRiskData = useMemo(() => {
-    const programMap = new Map<string, { Supply: number; "MRB/RI": number; Capacity: number; Planning: number }>()
+    const programMap = new Map<string, { Supply: number; "MRB/RI": number; Factory: number; Planning: number }>()
     atRiskDeliveries.forEach(d => {
-      const entry = programMap.get(d.program) || { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
+      const entry = programMap.get(d.program) || { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 }
       entry[d.driver]++
       programMap.set(d.program, entry)
     })
     return Array.from(programMap.entries())
-      .map(([program, drivers]) => ({ program, ...drivers, total: drivers.Supply + drivers["MRB/RI"] + drivers.Capacity + drivers.Planning }))
+      .map(([program, drivers]) => ({ program, ...drivers, total: drivers.Supply + drivers["MRB/RI"] + drivers.Factory + drivers.Planning }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 10)
   }, [atRiskDeliveries])
@@ -789,7 +789,7 @@ export function OTDTracking() {
   // Driver waterfall data - TRUE waterfall with floating bars using [start, end] range
   const driverWaterfallData = useMemo(() => {
     const total = atRiskDeliveries.length
-    const drivers: DriverCategory[] = ["Supply", "MRB/RI", "Capacity", "Planning"]
+    const drivers: DriverCategory[] = ["Supply", "MRB/RI", "Factory", "Planning"]
     
     // Calculate cumulative positions for waterfall effect
     let cumulative = 0
@@ -836,7 +836,7 @@ export function OTDTracking() {
       if (planDelta > 14) correction = "Pull in plan"
       else if (planDelta > 7) correction = "Resequence"
       else if (d.driver === "Supply") correction = "Escalate supply"
-      else if (d.driver === "Capacity") correction = "Adjust capacity"
+      else if (d.driver === "Factory") correction = "Adjust capacity"
       
       return {
         ...d,
@@ -1144,7 +1144,7 @@ export function OTDTracking() {
   // Driver Legend Component (clickable)
   const DriverLegend = () => (
     <div className="flex items-center gap-3 text-xs">
-      {(["Supply", "MRB/RI", "Capacity", "Planning"] as DriverCategory[]).map(driver => (
+      {(["Supply", "MRB/RI", "Factory", "Planning"] as DriverCategory[]).map(driver => (
         <button
           key={driver}
           onClick={() => handleDriverLegendClick(driver)}
@@ -1501,8 +1501,8 @@ export function OTDTracking() {
                       <p><strong>ExpectedDateResolved:</strong> ExpectedDate → PromiseDate → ForecastDate (first non-null value used).</p>
                       <p><strong>At-Risk:</strong> DueDateResolved in future AND ExpectedDateResolved {'>'} DueDateResolved.</p>
                       <p><strong>Late:</strong> DueDateResolved {'<'} Today AND not yet delivered (actualDate is null).</p>
-                      <p><strong>Driver:</strong> Supply = PO late/short; MRB/RI = material in inspection/MRB queue; Capacity = workcenter constraint; Planning = plan date mismatch.</p>
-                      <p><strong>Escalation Owner:</strong> Supply → Supply Chain/Buyer; MRB/RI → Quality/MRB; Capacity → Factory/Operations; Planning → Production Planner.</p>
+<p><strong>Driver:</strong> Supply = PO late/short; MRB/RI = material in inspection/MRB queue; Factory = workcenter/shop-floor constraint; Planning = plan date mismatch.</p>
+                  <p><strong>Escalation Owner:</strong> Supply → Supply Chain/Buyer; MRB/RI → Quality/MRB; Factory → Factory/Operations; Planning → Production Planner.</p>
                       <p><strong>Customer Comms Required:</strong> Late OR (DaysToDue ≤ 7 AND ExpectedDateResolved {'>'} DueDateResolved).</p>
                       <p><strong>Days to Due:</strong> Calendar days from today to DueDateResolved. Negative = past due.</p>
                     </div>

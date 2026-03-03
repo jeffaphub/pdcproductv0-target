@@ -126,7 +126,7 @@ export type TimeBucketData = {
   dominantDriver: DriverCategory
   supplyDriverCount: number
   mrbDriverCount: number
-  capacityDriverCount: number
+  factoryDriverCount: number
   planningDriverCount: number
 }
 
@@ -484,7 +484,7 @@ export function generateTimeBuckets(deliveries: OTDDelivery[], bucket: TimeBucke
     const late = bucketDeliveries.filter(d => d.otdStatus === "Late").length
     const atRisk = bucketDeliveries.filter(d => d.otdStatus === "At-Risk").length
 
-    const driverCounts = { Supply: 0, "MRB/RI": 0, Capacity: 0, Planning: 0 }
+    const driverCounts = { Supply: 0, "MRB/RI": 0, Factory: 0, Planning: 0 }
     bucketDeliveries.forEach(d => driverCounts[d.driver]++)
     const dominantDriver = Object.entries(driverCounts).sort((a, b) => b[1] - a[1])[0][0] as DriverCategory
 
@@ -502,7 +502,7 @@ export function generateTimeBuckets(deliveries: OTDDelivery[], bucket: TimeBucke
       dominantDriver,
       supplyDriverCount: driverCounts.Supply,
       mrbDriverCount: driverCounts["MRB/RI"],
-      capacityDriverCount: driverCounts.Capacity,
+      factoryDriverCount: driverCounts.Factory,
       planningDriverCount: driverCounts.Planning,
     })
   }
