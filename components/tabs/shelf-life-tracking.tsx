@@ -162,6 +162,12 @@ function generateLotRecords(count: number = 250): LotRecord[] {
     }
     
     // Determine risk type using effective expiry and planned_use_date
+    // Logic:
+    // - OK (Healthy): ALL pegged uses are BEFORE expiry (no conflicts)
+    // - Pegged risk: Mixed state - some uses before expiry, some after (or near-expiry with uncertainty)
+    // - False coverage: ALL pegged uses are AFTER expiry (plan thinks you're covered but you're not)
+    // - Expired: Already past expiry
+    // - Near-expiry unpegged: Near expiry with no demand linked
     let riskType: LotRecord["riskType"] = "Healthy"
     let riskSentence = ""
     const nearExpiryThreshold = 14 // days
@@ -176,22 +182,42 @@ function generateLotRecords(count: number = 250): LotRecord[] {
         riskSentence = `This lot expired ${Math.abs(daysToEffectiveExpiry)} days ago and cannot be used.`
       }
     } else if (linkedDemand.length > 0) {
-      const earliestUse = linkedDemand.reduce((min, d) => d.plannedUseDate < min ? d.plannedUseDate : min, linkedDemand[0].plannedUseDate)
-      const daysToUse = Math.floor((earliestUse.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
-      const delta = daysToUse - daysToEffectiveExpiry // positive = use after expiry
+      // Check ALL demand uses against expiry
+      const usesAfterExpiry = linkedDemand.filter(d => {
+        const daysToUse = Math.floor((d.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+        return daysToUse > daysToEffectiveExpiry
+      })
+      const usesBeforeExpiry = linkedDemand.filter(d => {
+        const daysToUse = Math.floor((d.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+        return daysToUse <= daysToEffectiveExpiry
+      })
       
-      if (delta > 0) {
-        // Planned use is AFTER effective expiry = Expires before use = False coverage
+      const earliestUse = linkedDemand.reduce((min, d) => d.plannedUseDate < min ? d.plannedUseDate : min, linkedDemand[0].plannedUseDate)
+      const daysToEarliestUse = Math.floor((earliestUse.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+      
+      if (usesAfterExpiry.length === linkedDemand.length) {
+        // ALL uses are after expiry = pure false coverage
         riskType = "False coverage"
-        riskSentence = `This lot becomes unusable on ${effectiveExpiryDate.toLocaleDateString()}. Next planned use is ${earliestUse.toLocaleDateString()} (Δ = +${delta} days after expiry). This is FALSE COVERAGE.`
+        const delta = daysToEarliestUse - daysToEffectiveExpiry
+        riskSentence = `ALL planned uses occur AFTER expiry. This lot becomes unusable on ${effectiveExpiryDate.toLocaleDateString()}. Earliest use is ${earliestUse.toLocaleDateString()} (Δ = +${delta} days). This is FALSE COVERAGE.`
+      } else if (usesAfterExpiry.length > 0 && usesBeforeExpiry.length > 0) {
+        // Mixed: some uses before, some after = pegged risk
+        riskType = "Near-expiry pegged"
+        riskSentence = `MIXED: ${usesBeforeExpiry.length} use(s) before expiry, ${usesAfterExpiry.length} use(s) after expiry. Lot expires ${effectiveExpiryDate.toLocaleDateString()}. Review allocation.`
       } else if (daysToEffectiveExpiry <= nearExpiryThreshold) {
-        // Near-expiry but use is before expiry
+        // All uses before expiry but lot is near-expiry = use-first candidate
         riskType = "Near-expiry pegged"
-        riskSentence = `This lot becomes unusable on ${effectiveExpiryDate.toLocaleDateString()}. Next planned use is ${earliestUse.toLocaleDateString()} (Δ = ${delta} days). Near expiry but usable if consumed promptly.`
-      } else if (daysToEffectiveExpiry <= 30 && Math.abs(delta) <= nearExpiryThreshold) {
-        // Expires within 30 days and use is close to expiry
+        const delta = daysToEarliestUse - daysToEffectiveExpiry
+        riskSentence = `Near-expiry but safe. Use planned ${earliestUse.toLocaleDateString()} (Δ = ${delta} days before expiry). Prioritize consumption.`
+      } else if (daysToEffectiveExpiry <= 30) {
+        // Expires within 30 days, all uses before = near-expiry pegged (use-first)
         riskType = "Near-expiry pegged"
-        riskSentence = `This lot becomes unusable on ${effectiveExpiryDate.toLocaleDateString()}. Next planned use is ${earliestUse.toLocaleDateString()} (Δ = ${delta} days). Use-first candidate.`
+        const delta = daysToEarliestUse - daysToEffectiveExpiry
+        riskSentence = `Expires in ${daysToEffectiveExpiry} days. Use planned ${earliestUse.toLocaleDateString()} (Δ = ${delta} days before expiry). Use-first candidate.`
+      }
+      // If daysToEffectiveExpiry > 30 and all uses are before expiry, it stays "Healthy" (OK)
+      if (riskType === "Healthy" && usesBeforeExpiry.length === linkedDemand.length) {
+        riskSentence = `OK: All ${linkedDemand.length} pegged use(s) scheduled before expiry (${effectiveExpiryDate.toLocaleDateString()}).`
       }
     } else if (daysToEffectiveExpiry <= 30) {
       riskType = "Near-expiry unpegged"
@@ -956,13 +982,13 @@ export function ShelfLifeTracking() {
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-lg font-bold text-gray-900">Pegged Use vs Effective Expiry (Timeline)</CardTitle>
-                      <p className="text-sm text-gray-500 mt-0.5">Top 20 lots by soonest effective expiry — click row to open details</p>
+                      <p className="text-sm text-gray-500 mt-0.5">Top 20 lots by soonest expiry. OK = all uses before expiry (blue only). Pegged risk = mixed (some blue, some red). False coverage = all uses after expiry (red only).</p>
                     </div>
                     <div className="flex items-center gap-4 text-xs">
                       <span className="flex items-center gap-1.5"><span className="w-4 h-2 bg-green-500 rounded" /> Life remaining</span>
-                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-5 bg-gray-800 rounded" /> Effective Expiry</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full" /> Use before expiry</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-red-600 rounded-full ring-2 ring-red-200" /> Use after expiry</span>
+                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-5 bg-gray-800 rounded" /> Expiry</span>
+                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full" /> Safe use (before expiry)</span>
+                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-red-600 rounded-full ring-2 ring-red-200" /> Conflict (after expiry)</span>
                     </div>
                   </div>
                 </CardHeader>
@@ -972,8 +998,8 @@ export function ShelfLifeTracking() {
                     <div className="flex border-b border-gray-200 bg-gray-100">
                       <div className="w-48 flex-shrink-0 p-3 text-xs font-bold text-gray-700">Lot / Part</div>
                       <div className="flex-1 relative h-10">
-                        {[0, 30, 60, 90, 120, 150, 180].map(day => (
-                          <div key={day} className="absolute top-0 bottom-0 flex items-center justify-center text-xs text-gray-500" style={{ left: `${(day / 180) * 100}%` }}>
+                        {[0, 30, 60, 90, 120].map(day => (
+                          <div key={day} className="absolute top-0 bottom-0 flex items-center justify-center text-xs text-gray-500" style={{ left: `${(day / 120) * 100}%` }}>
                             <span className="font-medium">{day === 0 ? "Today" : `+${day}d`}</span>
                           </div>
                         ))}
@@ -984,7 +1010,7 @@ export function ShelfLifeTracking() {
                     {/* Rows */}
                     <div className="divide-y divide-gray-100">
                       {timelineData.map(lot => {
-                        const maxDays = 180
+                        const maxDays = 120
                         const expiryPct = Math.min(Math.max(lot.daysToEffectiveExpiry / maxDays * 100, 0), 100)
                         
                         return (
@@ -1061,7 +1087,7 @@ export function ShelfLifeTracking() {
                                 lot.riskType === "Near-expiry unpegged" ? "bg-yellow-100 text-yellow-800 border-yellow-300" :
                                 "bg-green-100 text-green-800 border-green-300"
                               }`}>
-                                {lot.riskType === "Healthy" ? "OK" : lot.riskType.replace("Near-expiry ", "")}
+                                {lot.riskType === "Healthy" ? "OK" : lot.riskType === "Near-expiry pegged" ? "Pegged risk" : lot.riskType.replace("Near-expiry ", "")}
                               </Badge>
                             </div>
                           </div>
