@@ -2543,7 +2543,7 @@ export function OTDTracking() {
                           <span className="text-sm font-medium text-gray-800">{b.workcenter}</span>
                           <div className="flex items-center gap-3">
                             <span className="text-xs text-gray-500">{b.slipDays}d slip</span>
-                            <Badge variant="secondary" className="text-xs">{b.count} jobs</Badge>
+                            <Badge className="text-xs bg-purple-600 text-white">{b.count} jobs</Badge>
                           </div>
                         </div>
                       ))}
@@ -2570,7 +2570,7 @@ export function OTDTracking() {
                           onClick={() => setPlannerBlockerFilter(plannerBlockerFilter?.type === "mrb" && plannerBlockerFilter.value === b.reason ? null : { type: "mrb", value: b.reason })}
                         >
                           <span className="text-sm font-medium text-gray-800">{b.reason}</span>
-                          <Badge variant="secondary" className="text-xs">{b.count} jobs</Badge>
+                          <Badge className="text-xs bg-orange-600 text-white">{b.count} jobs</Badge>
                         </div>
                       ))}
                     </div>
@@ -2598,7 +2598,7 @@ export function OTDTracking() {
                           <span className="text-sm font-medium text-gray-800 truncate max-w-[140px]">{b.supplier}</span>
                           <div className="flex items-center gap-2">
                             <span className="text-xs text-gray-500">{b.poLines} POs</span>
-                            <Badge variant="secondary" className="text-xs">{b.count} jobs</Badge>
+                            <Badge className="text-xs bg-blue-600 text-white">{b.count} jobs</Badge>
                           </div>
                         </div>
                       ))}
