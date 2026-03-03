@@ -718,8 +718,10 @@ export function ShelfLifeTracking() {
   // ===== STORES: Location Health Chart Data =====
   const locationHealthData = useMemo(() => {
     const data: { location: string; Healthy: number; "Near-expiry": number; Expired: number }[] = []
-    locations.forEach(loc => {
-      const lotsInLoc = allLots.filter(l => l.location === loc)
+    // Get unique locations from filtered lots
+    const locsInScope = [...new Set(filteredLots.map(l => l.location))]
+    locsInScope.forEach(loc => {
+      const lotsInLoc = filteredLots.filter(l => l.location === loc)
       data.push({
         location: loc,
         Healthy: lotsInLoc.filter(l => l.daysToEffectiveExpiry > 30).length,
@@ -727,22 +729,24 @@ export function ShelfLifeTracking() {
         Expired: lotsInLoc.filter(l => l.daysToEffectiveExpiry <= 0).length
       })
     })
-    return data
-  }, [])
+    return data.sort((a, b) => (b.Healthy + b["Near-expiry"] + b.Expired) - (a.Healthy + a["Near-expiry"] + a.Expired))
+  }, [filteredLots])
   
   // ===== STORES: Near-expiry by Family =====
   const nearExpiryByFamily = useMemo(() => {
     const data: { family: string; count: number }[] = []
-    materialFamilies.forEach(fam => {
-      const count = allLots.filter(l => l.materialFamily === fam && l.daysToEffectiveExpiry <= 30 && l.daysToEffectiveExpiry > 0).length
+    // Get unique families from filtered lots
+    const famsInScope = [...new Set(filteredLots.map(l => l.materialFamily))]
+    famsInScope.forEach(fam => {
+      const count = filteredLots.filter(l => l.materialFamily === fam && l.daysToEffectiveExpiry <= 30 && l.daysToEffectiveExpiry > 0).length
       if (count > 0) data.push({ family: fam, count })
     })
     return data.sort((a, b) => b.count - a.count).slice(0, 8)
-  }, [])
+  }, [filteredLots])
   
   // ===== QUALITY: MRB Age vs Days to Expiry Scatter =====
   const mrbScatterData = useMemo(() => {
-    return allLots
+    return filteredLots
       .filter(l => l.mrbStatus !== "None" && l.mrbAge !== null)
       .map(l => ({
         id: l.id,
@@ -751,16 +755,16 @@ export function ShelfLifeTracking() {
         daysToExpiry: l.daysToEffectiveExpiry,
         qty: l.quantity
       }))
-  }, [])
+  }, [filteredLots])
   
   // ===== QUALITY: Recert Pipeline =====
   const recertPipeline = useMemo(() => {
     const statuses: RecertStatus[] = ["Due for recert", "In lab", "Passed", "Failed", "Not eligible"]
     return statuses.map(s => ({
       status: s,
-      count: allLots.filter(l => l.recertStatus === s).length
+      count: filteredLots.filter(l => l.recertStatus === s).length
     }))
-  }, [])
+  }, [filteredLots])
   
   // ===== PROGRAM: Coverage Over Time =====
   const coverageOverTime = useMemo(() => {
@@ -775,7 +779,7 @@ export function ShelfLifeTracking() {
       let paperQty = 0
       let usableQty = 0
       
-      allLots.forEach(lot => {
+      filteredLots.forEach(lot => {
         lot.linkedDemand.forEach(d => {
           if (d.plannedUseDate >= weekStart && d.plannedUseDate < weekEnd) {
             demandQty += d.qty
@@ -797,13 +801,13 @@ export function ShelfLifeTracking() {
     }
     
     return weeks
-  }, [])
+  }, [filteredLots])
   
   // ===== PROGRAM: Top Exposed CLINs =====
   const exposedClins = useMemo(() => {
     const clinMap = new Map<string, { program: string; clin: string; woNumber: string; needDate: Date; atRiskParts: string[]; lots: LotRecord[]; conflictType: string }>()
     
-    allLots.forEach(lot => {
+    filteredLots.forEach(lot => {
       if (lot.riskType === "False coverage" || lot.riskType === "Expires before use") {
         lot.linkedDemand.forEach(d => {
           const key = `${d.woNumber}-${d.clin}`
@@ -828,7 +832,7 @@ export function ShelfLifeTracking() {
     return Array.from(clinMap.values())
       .sort((a, b) => a.needDate.getTime() - b.needDate.getTime())
       .slice(0, 20)
-  }, [])
+  }, [filteredLots])
 
   return (
     <TooltipProvider>
