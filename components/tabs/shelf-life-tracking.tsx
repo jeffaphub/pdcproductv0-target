@@ -388,6 +388,36 @@ function LotDetailDrawer({ lot, open, onClose }: { lot: LotRecord | null; open: 
           </p>
         </div>
         
+        {/* Program/PDM Decision Statement - shown when lot has false coverage */}
+        {(lot.riskType === "False coverage" || lot.riskType === "Expires before use") && earliestDemand && (
+          <div className="p-4 rounded-lg mb-6 bg-blue-50 border-2 border-blue-300">
+            <p className="text-xs font-bold text-blue-700 uppercase tracking-wide mb-2">Program Decision Required</p>
+            <p className="text-sm text-blue-900">
+              This CLIN is <strong>uncovered in reality</strong> because the lot becomes unusable on{" "}
+              <strong>{lot.effectiveExpiryDate.toLocaleDateString()}</strong> but use is{" "}
+              <strong>{earliestDemand.plannedUseDate.toLocaleDateString()}</strong>.{" "}
+              To protect OTD you must either:
+            </p>
+            <ul className="mt-2 text-sm text-blue-800 list-disc list-inside space-y-1">
+              <li>
+                <strong>Pull in the build</strong> by {Math.abs(delta)} days (move use date to before {lot.effectiveExpiryDate.toLocaleDateString()})
+              </li>
+              {lot.recertAllowed && lot.recertCyclesRemaining > 0 ? (
+                <li>
+                  <strong>Start recert</strong> by{" "}
+                  {new Date(earliestDemand.plannedUseDate.getTime() - 10 * 24 * 60 * 60 * 1000).toLocaleDateString()}{" "}
+                  (10 days before need)
+                </li>
+              ) : null}
+              <li>
+                <strong>Place replacement order</strong> by{" "}
+                {new Date(earliestDemand.plannedUseDate.getTime() - 21 * 24 * 60 * 60 * 1000).toLocaleDateString()}{" "}
+                (21 days before need)
+              </li>
+            </ul>
+          </div>
+        )}
+        
         {/* Lot Info Grid */}
         <div className="grid grid-cols-2 gap-4 mb-6">
           <div>
@@ -786,10 +816,19 @@ export function ShelfLifeTracking() {
     }))
   }, [filteredLots])
   
-  // ===== PROGRAM: Coverage Over Time =====
+  // ===== PROGRAM: Coverage Over Time with Driver Annotations =====
+  const [coverageGroupBy, setCoverageGroupBy] = useState<"program" | "family" | "part">("program")
+  
   const coverageOverTime = useMemo(() => {
     const today = new Date()
-    const weeks: { week: string; demand: number; paperCoverage: number; usableCoverage: number }[] = []
+    const weeks: { 
+      week: string
+      demand: number
+      paperCoverage: number
+      usableCoverage: number
+      driverAnnotation: string | null
+      driverDetails: { reason: string; count: number }[]
+    }[] = []
     
     for (let w = 0; w < 12; w++) {
       const weekStart = new Date(today.getTime() + w * 7 * 24 * 60 * 60 * 1000)
@@ -798,6 +837,9 @@ export function ShelfLifeTracking() {
       let demandQty = 0
       let paperQty = 0
       let usableQty = 0
+      const drivers: { shelfExpiry: number; serviceLife: number; mrbHold: number; recertLead: number } = {
+        shelfExpiry: 0, serviceLife: 0, mrbHold: 0, recertLead: 0
+      }
       
       filteredLots.forEach(lot => {
         lot.linkedDemand.forEach(d => {
@@ -807,25 +849,180 @@ export function ShelfLifeTracking() {
             const daysToUse = Math.floor((d.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
             if (lot.daysToEffectiveExpiry >= daysToUse) {
               usableQty += d.qty
+            } else {
+              // Track why unusable
+              if (lot.mrbStatus !== "None") {
+                drivers.mrbHold += d.qty
+              } else if (lot.serviceExpiryDate && lot.serviceExpiryDate <= lot.expiryDate) {
+                drivers.serviceLife += d.qty
+              } else if (lot.recertStatus === "Due for recert" || lot.recertStatus === "In lab") {
+                drivers.recertLead += d.qty
+              } else {
+                drivers.shelfExpiry += d.qty
+              }
             }
           }
         })
       })
       
+      // Determine dominant driver annotation
+      let driverAnnotation: string | null = null
+      const driverDetails: { reason: string; count: number }[] = []
+      if (drivers.shelfExpiry > 0) driverDetails.push({ reason: "Shelf expiry", count: drivers.shelfExpiry })
+      if (drivers.serviceLife > 0) driverDetails.push({ reason: "Service-life/open-thaw", count: drivers.serviceLife })
+      if (drivers.mrbHold > 0) driverDetails.push({ reason: "MRB hold", count: drivers.mrbHold })
+      if (drivers.recertLead > 0) driverDetails.push({ reason: "Recert lead time", count: drivers.recertLead })
+      
+      driverDetails.sort((a, b) => b.count - a.count)
+      if (driverDetails.length > 0 && (demandQty - usableQty) > 0) {
+        driverAnnotation = driverDetails[0].reason
+      }
+      
       weeks.push({
         week: `W${w + 1}`,
         demand: demandQty,
         paperCoverage: demandQty > 0 ? Math.round((paperQty / demandQty) * 100) : 100,
-        usableCoverage: demandQty > 0 ? Math.round((usableQty / demandQty) * 100) : 100
+        usableCoverage: demandQty > 0 ? Math.round((usableQty / demandQty) * 100) : 100,
+        driverAnnotation,
+        driverDetails
       })
     }
     
     return weeks
   }, [filteredLots])
   
+  // ===== PROGRAM: Decision Windows for Perishable Materials (Shelf-Life Chicken) =====
+  const decisionWindows = useMemo(() => {
+    const today = new Date()
+    const partMap = new Map<string, {
+      partNumber: string
+      materialFamily: string
+      exposedJobs: number
+      qtyAtRisk: number
+      nextNeedDate: Date | null
+      earliestExpiringLot: LotRecord | null
+      effectiveExpiry: Date | null
+      supplierLeadTime: number | null // days - simulated
+      receivingInspectionLeadTime: number | null // days - simulated
+      recertLeadTime: number | null // days - simulated
+      latestSafeActionDate: Date | null
+      earliestSafeBuyDate: Date | null
+      recommendedDecision: string
+    }>()
+    
+    // Simulated lead times (would come from master data in real system)
+    const getLeadTimes = (partNumber: string) => ({
+      supplierLeadTime: 14 + Math.floor(Math.random() * 21), // 14-35 days
+      receivingInspectionLeadTime: 3 + Math.floor(Math.random() * 4), // 3-7 days
+      recertLeadTime: 7 + Math.floor(Math.random() * 7), // 7-14 days
+      maxHoldingWindow: 30 // typical max storage window before use
+    })
+    
+    filteredLots.forEach(lot => {
+      if (lot.riskType === "False coverage" || lot.riskType === "Expires before use" || 
+          (lot.riskType === "Near-expiry pegged" && lot.daysToEffectiveExpiry <= 30)) {
+        
+        lot.linkedDemand.forEach(d => {
+          const daysToUse = Math.floor((d.plannedUseDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+          if (daysToUse > lot.daysToEffectiveExpiry) { // Conflict exists
+            const key = lot.partNumber
+            if (!partMap.has(key)) {
+              const leadTimes = getLeadTimes(lot.partNumber)
+              partMap.set(key, {
+                partNumber: lot.partNumber,
+                materialFamily: lot.materialFamily,
+                exposedJobs: 0,
+                qtyAtRisk: 0,
+                nextNeedDate: null,
+                earliestExpiringLot: null,
+                effectiveExpiry: null,
+                supplierLeadTime: leadTimes.supplierLeadTime,
+                receivingInspectionLeadTime: leadTimes.receivingInspectionLeadTime,
+                recertLeadTime: lot.recertAllowed ? leadTimes.recertLeadTime : null,
+                latestSafeActionDate: null,
+                earliestSafeBuyDate: null,
+                recommendedDecision: ""
+              })
+            }
+            const entry = partMap.get(key)!
+            entry.exposedJobs++
+            entry.qtyAtRisk += d.qty
+            
+            // Track earliest need date
+            if (!entry.nextNeedDate || d.plannedUseDate < entry.nextNeedDate) {
+              entry.nextNeedDate = d.plannedUseDate
+            }
+            
+            // Track earliest expiring lot
+            if (!entry.earliestExpiringLot || lot.effectiveExpiryDate < entry.earliestExpiringLot.effectiveExpiryDate) {
+              entry.earliestExpiringLot = lot
+              entry.effectiveExpiry = lot.effectiveExpiryDate
+            }
+          }
+        })
+      }
+    })
+    
+    // Calculate decision dates for each part
+    partMap.forEach((entry, key) => {
+      if (entry.nextNeedDate && entry.supplierLeadTime !== null && entry.receivingInspectionLeadTime !== null) {
+        // Latest safe action date = Need date - Supplier lead time - Receiving/Inspection
+        const buyLeadTime = entry.supplierLeadTime + entry.receivingInspectionLeadTime
+        const latestBuyDate = new Date(entry.nextNeedDate.getTime() - buyLeadTime * 24 * 60 * 60 * 1000)
+        
+        // If recert is an option, also consider recert lead time
+        let latestRecertDate: Date | null = null
+        if (entry.recertLeadTime !== null) {
+          latestRecertDate = new Date(entry.nextNeedDate.getTime() - entry.recertLeadTime * 24 * 60 * 60 * 1000)
+        }
+        
+        // Latest safe action date is the earlier of buy deadline and recert deadline
+        entry.latestSafeActionDate = latestRecertDate && latestRecertDate > latestBuyDate 
+          ? latestRecertDate 
+          : latestBuyDate
+        
+        // Earliest safe buy date = Latest action date - max holding window (30 days)
+        entry.earliestSafeBuyDate = new Date(entry.latestSafeActionDate.getTime() - 30 * 24 * 60 * 60 * 1000)
+        
+        // Determine recommendation
+        const today = new Date()
+        const daysToLatestAction = Math.floor((entry.latestSafeActionDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+        
+        if (daysToLatestAction < 0) {
+          entry.recommendedDecision = "URGENT: Past deadline - expedite or customer comms"
+        } else if (daysToLatestAction <= 7) {
+          entry.recommendedDecision = entry.recertLeadTime !== null 
+            ? "Start recert with fallback buy" 
+            : "Place replacement order NOW"
+        } else if (entry.earliestExpiringLot && entry.earliestExpiringLot.linkedDemand.length > 1) {
+          entry.recommendedDecision = "Pull demand earlier / Use-first priority"
+        } else {
+          entry.recommendedDecision = entry.recertLeadTime !== null
+            ? "Plan recert or replacement buy"
+            : "Schedule replacement buy"
+        }
+      }
+    })
+    
+    return Array.from(partMap.values())
+      .sort((a, b) => (b.exposedJobs + b.qtyAtRisk / 100) - (a.exposedJobs + a.qtyAtRisk / 100))
+      .slice(0, 10)
+  }, [filteredLots])
+  
   // ===== PROGRAM: Top Exposed CLINs =====
   const exposedClins = useMemo(() => {
-    const clinMap = new Map<string, { program: string; clin: string; woNumber: string; needDate: Date; atRiskParts: string[]; lots: LotRecord[]; conflictType: string }>()
+    const today = new Date()
+    const clinMap = new Map<string, { 
+      program: string
+      clin: string
+      woNumber: string
+      needDate: Date
+      atRiskParts: string[]
+      lots: LotRecord[]
+      conflictType: string
+      decisionRequired: string
+      decisionDeadline: Date | null
+    }>()
     
     filteredLots.forEach(lot => {
       if (lot.riskType === "False coverage" || lot.riskType === "Expires before use") {
@@ -839,13 +1036,39 @@ export function ShelfLifeTracking() {
               needDate: d.plannedUseDate,
               atRiskParts: [],
               lots: [],
-              conflictType: lot.riskType
+              conflictType: lot.riskType,
+              decisionRequired: "",
+              decisionDeadline: null
             })
           }
           const entry = clinMap.get(key)!
           if (!entry.atRiskParts.includes(lot.partNumber)) entry.atRiskParts.push(lot.partNumber)
           entry.lots.push(lot)
         })
+      }
+    })
+    
+    // Determine decision required and deadline for each CLIN
+    clinMap.forEach((entry, key) => {
+      const hasRecertOption = entry.lots.some(l => l.recertAllowed && l.recertCyclesRemaining > 0)
+      const earliestExpiry = entry.lots.reduce((min, l) => l.effectiveExpiryDate < min ? l.effectiveExpiryDate : min, entry.lots[0]?.effectiveExpiryDate || new Date())
+      
+      // Decision deadline = earlier of (need date - supplier lead) or (expiry date - recert lead) 
+      const buyDeadline = new Date(entry.needDate.getTime() - 21 * 24 * 60 * 60 * 1000) // 21 days before need
+      const recertDeadline = hasRecertOption ? new Date(entry.needDate.getTime() - 10 * 24 * 60 * 60 * 1000) : null
+      
+      entry.decisionDeadline = recertDeadline && recertDeadline > buyDeadline ? recertDeadline : buyDeadline
+      
+      // Determine decision type
+      const daysToNeed = Math.floor((entry.needDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+      if (daysToNeed <= 14 && hasRecertOption) {
+        entry.decisionRequired = "Recert plan"
+      } else if (daysToNeed <= 21) {
+        entry.decisionRequired = "Replacement buy"
+      } else if (entry.lots.some(l => l.linkedDemand.length > 1)) {
+        entry.decisionRequired = "Pull-in schedule"
+      } else {
+        entry.decisionRequired = hasRecertOption ? "Recert / Buy decision" : "Customer comms"
       }
     })
     
@@ -1728,24 +1951,175 @@ export function ShelfLifeTracking() {
               {/* Paper vs Usable Coverage Chart */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Paper vs Usable Coverage Over Time</CardTitle>
-                  <p className="text-xs text-gray-500">Paper coverage (gross on-hand) vs Usable coverage (enforcing effective expiry at planned use date)</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-sm font-bold text-gray-800">Paper vs Usable Coverage Over Time</CardTitle>
+                      <p className="text-xs text-gray-500">Paper (gross on-hand) vs Usable (enforcing effective expiry). Callouts show dominant driver when usable drops.</p>
+                    </div>
+                    <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+                      {(["program", "family", "part"] as const).map(mode => (
+                        <button
+                          key={mode}
+                          onClick={() => setCoverageGroupBy(mode)}
+                          className={`px-3 py-1 rounded text-xs font-medium transition-all ${
+                            coverageGroupBy === mode
+                              ? "bg-white text-gray-900 shadow-sm"
+                              : "text-gray-600 hover:text-gray-900"
+                          }`}
+                        >
+                          {mode === "program" ? "Programs" : mode === "family" ? "Material family" : "Top parts"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <div className="h-[300px]">
+                  <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={coverageOverTime} margin={{ left: 10, right: 20 }}>
+                      <ComposedChart data={coverageOverTime} margin={{ left: 10, right: 20, top: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" tick={{ fontSize: 11 }} />
                         <YAxis yAxisId="left" orientation="left" tick={{ fontSize: 11 }} label={{ value: 'Demand Qty', angle: -90, position: 'insideLeft', fontSize: 11 }} />
                         <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 11 }} label={{ value: 'Coverage %', angle: 90, position: 'insideRight', fontSize: 11 }} />
-                        <Tooltip />
+                        <Tooltip content={({ active, payload, label }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload
+                            return (
+                              <div className="bg-white p-3 border border-gray-200 rounded shadow-lg text-xs max-w-xs">
+                                <p className="font-bold text-sm mb-2">{label}</p>
+                                <p><span className="text-gray-500">Demand:</span> {data.demand} units</p>
+                                <p><span className="text-gray-500">Paper Coverage:</span> {data.paperCoverage}%</p>
+                                <p><span className="text-gray-500">Usable Coverage:</span> <span className={data.usableCoverage < data.paperCoverage ? "text-red-600 font-bold" : "text-green-600"}>{data.usableCoverage}%</span></p>
+                                {data.usableCoverage < 100 && data.driverDetails && data.driverDetails.length > 0 && (
+                                  <div className="mt-2 pt-2 border-t border-gray-200">
+                                    <p className="font-semibold text-gray-700 mb-1">Coverage gap drivers:</p>
+                                    {data.driverDetails.map((d: {reason: string; count: number}, i: number) => (
+                                      <p key={i} className="text-gray-600">• {d.reason}: {d.count} units</p>
+                                    ))}
+                                  </div>
+                                )}
+                                <p className="mt-2 pt-2 border-t border-gray-200 text-gray-500 italic">
+                                  Usable coverage enforces Effective Expiry at planned use date (earliest of shelf expiry and service/open-thaw expiry).
+                                </p>
+                              </div>
+                            )
+                          }
+                          return null
+                        }} />
                         <Legend />
                         <Bar yAxisId="left" dataKey="demand" name="Demand Qty" fill="#e5e7eb" radius={[4, 4, 0, 0]} />
                         <Line yAxisId="right" type="monotone" dataKey="paperCoverage" name="Paper Coverage %" stroke="#6b7280" strokeWidth={2} dot={{ r: 4 }} />
-                        <Line yAxisId="right" type="monotone" dataKey="usableCoverage" name="Usable Coverage %" stroke="#22c55e" strokeWidth={2} dot={{ r: 4 }} />
+                        <Line 
+                          yAxisId="right" 
+                          type="monotone" 
+                          dataKey="usableCoverage" 
+                          name="Usable Coverage %" 
+                          stroke="#22c55e" 
+                          strokeWidth={2} 
+                          dot={{ r: 4 }}
+                          label={({ x, y, value, index }: { x: number; y: number; value: number; index: number }) => {
+                            const data = coverageOverTime[index]
+                            if (data && data.driverAnnotation && value < 100) {
+                              return (
+                                <text x={x} y={y - 12} fill="#dc2626" fontSize={9} textAnchor="middle">
+                                  {data.driverAnnotation}
+                                </text>
+                              )
+                            }
+                            return null
+                          }}
+                        />
                       </ComposedChart>
                     </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+              
+              {/* Decision Windows for Perishable Materials */}
+              <Card className="border-2 border-amber-300 bg-amber-50/30">
+                <CardHeader className="py-4 px-5 border-b border-amber-200 bg-amber-50">
+                  <CardTitle className="text-lg font-bold text-gray-900">Decision Windows for Perishable Materials</CardTitle>
+                  <p className="text-sm text-gray-600">
+                    {"\"Shelf-Life Chicken\": Order too early = risk expiry in stores. Order too late = miss need date. This table shows when to act."}
+                  </p>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-amber-100">
+                        <tr className="border-b border-amber-200">
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Part Number</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Family</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Exposed Jobs</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Qty at Risk</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Next Need Date</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Effective Expiry (On-hand)</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Lead Times</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700 bg-red-100">Latest Safe Action</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Earliest Safe Buy</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700 min-w-[180px]">Recommended Decision</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {decisionWindows.map((part, i) => {
+                          const today = new Date()
+                          const daysToAction = part.latestSafeActionDate 
+                            ? Math.floor((part.latestSafeActionDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+                            : null
+                          const isUrgent = daysToAction !== null && daysToAction <= 7
+                          const isPastDue = daysToAction !== null && daysToAction < 0
+                          
+                          return (
+                            <tr 
+                              key={i} 
+                              className={`transition-colors ${isPastDue ? "bg-red-50" : isUrgent ? "bg-orange-50" : "hover:bg-amber-50"} cursor-pointer`}
+                              onClick={() => part.earliestExpiringLot && handleLotClick(part.earliestExpiringLot)}
+                            >
+                              <td className="p-3 text-sm font-mono font-medium text-gray-900">{part.partNumber}</td>
+                              <td className="p-3 text-sm text-gray-600">{part.materialFamily}</td>
+                              <td className="p-3 text-sm font-bold text-orange-700">{part.exposedJobs}</td>
+                              <td className="p-3 text-sm font-bold text-red-700">{part.qtyAtRisk}</td>
+                              <td className="p-3 text-sm text-gray-700 whitespace-nowrap">
+                                {part.nextNeedDate?.toLocaleDateString() || "—"}
+                              </td>
+                              <td className="p-3 text-sm text-gray-700 whitespace-nowrap">
+                                {part.effectiveExpiry?.toLocaleDateString() || "—"}
+                              </td>
+                              <td className="p-3 text-xs text-gray-500">
+                                <div>Supplier: {part.supplierLeadTime ?? "?"}d</div>
+                                <div>Recv/Insp: {part.receivingInspectionLeadTime ?? "?"}d</div>
+                                {part.recertLeadTime !== null && <div>Recert: {part.recertLeadTime}d</div>}
+                              </td>
+                              <td className={`p-3 text-sm font-bold whitespace-nowrap ${isPastDue ? "text-red-700 bg-red-100" : isUrgent ? "text-orange-700 bg-orange-100" : "text-gray-900"}`}>
+                                {part.latestSafeActionDate?.toLocaleDateString() || "Unknown"}
+                                {daysToAction !== null && (
+                                  <span className="ml-1 text-xs">
+                                    ({daysToAction < 0 ? `${Math.abs(daysToAction)}d ago` : `${daysToAction}d`})
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 text-sm text-gray-600 whitespace-nowrap">
+                                {part.earliestSafeBuyDate?.toLocaleDateString() || "Unknown"}
+                              </td>
+                              <td className="p-3">
+                                <Badge className={`text-[10px] ${
+                                  isPastDue ? "bg-red-600 text-white" :
+                                  isUrgent ? "bg-orange-500 text-white" :
+                                  "bg-blue-100 text-blue-800 border-blue-300"
+                                }`}>
+                                  {part.recommendedDecision}
+                                </Badge>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                        {decisionWindows.length === 0 && (
+                          <tr>
+                            <td colSpan={10} className="p-8 text-center text-gray-400">No parts with decision windows in current filters</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </CardContent>
               </Card>
@@ -1754,7 +2128,7 @@ export function ShelfLifeTracking() {
               <Card className="border-2 border-gray-300">
                 <CardHeader className="py-4 px-5 border-b border-gray-200 bg-gray-50">
                   <CardTitle className="text-lg font-bold text-gray-900">Top Exposed CLINs / Builds</CardTitle>
-                  <p className="text-sm text-gray-500">Demand at risk due to shelf-life conflicts — click row to see affected lots</p>
+                  <p className="text-sm text-gray-500">Demand at risk due to shelf-life conflicts — click row to see affected lots and decision window</p>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="overflow-x-auto max-h-[400px]">
@@ -1765,23 +2139,28 @@ export function ShelfLifeTracking() {
                           <th className="text-left p-3 text-xs font-bold text-gray-700">CLIN / Job</th>
                           <th className="text-left p-3 text-xs font-bold text-gray-700">Need Window</th>
                           <th className="text-left p-3 text-xs font-bold text-gray-700">At-Risk Parts</th>
-                          <th className="text-left p-3 text-xs font-bold text-gray-700">Lots Driving Exposure</th>
-                          <th className="text-left p-3 text-xs font-bold text-gray-700">Conflict Type</th>
-                          <th className="text-left p-3 text-xs font-bold text-gray-700">Mitigation</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Lots</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700">Conflict</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700 bg-amber-100">Decision Required</th>
+                          <th className="text-left p-3 text-xs font-bold text-gray-700 bg-red-100">Decision Deadline</th>
                           <th className="text-left p-3 text-xs font-bold text-gray-700">Owner</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
                         {exposedClins.map((clin, i) => {
-                          // Determine mitigation based on lots
                           const hasRecertOption = clin.lots.some(l => l.recertAllowed && l.recertCyclesRemaining > 0)
-                          const mitigation = hasRecertOption ? "Recert / Replacement buy" : "Replacement buy / Resequence"
                           const owner = hasRecertOption ? "Quality" : "Buyer/Planner"
+                          const today = new Date()
+                          const daysToDeadline = clin.decisionDeadline 
+                            ? Math.floor((clin.decisionDeadline.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+                            : null
+                          const isUrgent = daysToDeadline !== null && daysToDeadline <= 7
+                          const isPastDue = daysToDeadline !== null && daysToDeadline < 0
                           
                           return (
                             <tr
                               key={i}
-                              className="hover:bg-blue-50 cursor-pointer transition-colors"
+                              className={`cursor-pointer transition-colors ${isPastDue ? "bg-red-50 hover:bg-red-100" : isUrgent ? "bg-orange-50 hover:bg-orange-100" : "hover:bg-blue-50"}`}
                               onClick={() => clin.lots[0] && handleLotClick(clin.lots[0])}
                             >
                               <td className="p-3 text-sm font-medium text-gray-900">{clin.program}</td>
@@ -1791,13 +2170,30 @@ export function ShelfLifeTracking() {
                                 {clin.atRiskParts.slice(0, 2).join(", ")}
                                 {clin.atRiskParts.length > 2 && ` +${clin.atRiskParts.length - 2}`}
                               </td>
-                              <td className="p-3 text-sm text-gray-600">{clin.lots.length} lot(s)</td>
+                              <td className="p-3 text-sm text-gray-600">{clin.lots.length}</td>
                               <td className="p-3">
                                 <Badge className="text-[10px] bg-red-100 text-red-800 border-red-300">
-                                  {clin.conflictType}
+                                  {clin.conflictType.replace("False coverage", "False cov.")}
                                 </Badge>
                               </td>
-                              <td className="p-3 text-sm font-medium text-blue-700">{mitigation}</td>
+                              <td className="p-3">
+                                <Badge className={`text-[10px] ${
+                                  clin.decisionRequired.includes("Recert") ? "bg-purple-100 text-purple-800" :
+                                  clin.decisionRequired.includes("Pull-in") ? "bg-blue-100 text-blue-800" :
+                                  clin.decisionRequired.includes("buy") ? "bg-orange-100 text-orange-800" :
+                                  "bg-gray-100 text-gray-800"
+                                }`}>
+                                  {clin.decisionRequired}
+                                </Badge>
+                              </td>
+                              <td className={`p-3 text-sm font-bold whitespace-nowrap ${isPastDue ? "text-red-700" : isUrgent ? "text-orange-700" : "text-gray-700"}`}>
+                                {clin.decisionDeadline?.toLocaleDateString() || "—"}
+                                {daysToDeadline !== null && (
+                                  <span className={`ml-1 text-xs ${isPastDue ? "text-red-600" : isUrgent ? "text-orange-600" : "text-gray-500"}`}>
+                                    ({daysToDeadline < 0 ? `${Math.abs(daysToDeadline)}d ago!` : `${daysToDeadline}d`})
+                                  </span>
+                                )}
+                              </td>
                               <td className="p-3">
                                 <Badge variant="outline" className={`text-[10px] ${
                                   owner === "Quality" ? "text-purple-700 border-purple-300" : "text-gray-700 border-gray-300"
@@ -1810,7 +2206,7 @@ export function ShelfLifeTracking() {
                         })}
                         {exposedClins.length === 0 && (
                           <tr>
-                            <td colSpan={8} className="p-8 text-center text-gray-400">No exposed CLINs in current horizon</td>
+                            <td colSpan={9} className="p-8 text-center text-gray-400">No exposed CLINs in current horizon</td>
                           </tr>
                         )}
                       </tbody>
