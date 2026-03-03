@@ -10,7 +10,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { AlertTriangle, Calendar, Clock, Package, Thermometer, MapPin, Search, X, RefreshCw, FileText, Users, Clipboard, Target, Info, ChevronRight, TrendingUp, Layers, Snowflake, BarChart3, ArrowRight } from "lucide-react"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend, ScatterChart, Scatter, ZAxis, LineChart, Line, ComposedChart, Area } from "recharts"
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend, ScatterChart, Scatter, ZAxis, LineChart, Line, ComposedChart, Area, ReferenceLine, ReferenceArea } from "recharts"
 
 // ===== TYPES =====
 type LocationBucket = "Warehouse" | "WIP" | "Shop Floor" | "MRB-Hold" | "Cold Storage"
@@ -745,16 +745,36 @@ export function ShelfLifeTracking() {
   }, [filteredLots])
   
   // ===== QUALITY: MRB Age vs Days to Expiry Scatter =====
+  // State to track selected scatter dot for filtering worklist
+  const [selectedMrbLotId, setSelectedMrbLotId] = useState<string | null>(null)
+  
   const mrbScatterData = useMemo(() => {
     return filteredLots
       .filter(l => l.mrbStatus !== "None" && l.mrbAge !== null)
-      .map(l => ({
-        id: l.id,
-        lot: l,
-        mrbAge: l.mrbAge!,
-        daysToExpiry: l.daysToEffectiveExpiry,
-        qty: l.quantity
-      }))
+      .filter(l => l.daysToEffectiveExpiry >= -60 && l.daysToEffectiveExpiry <= 90) // Clamp to -60 to +90 range
+      .map(l => {
+        const linkedDemandCount = l.linkedDemand.length
+        const nearestUseDate = l.linkedDemand.length > 0 
+          ? l.linkedDemand.reduce((min, d) => d.plannedUseDate < min ? d.plannedUseDate : min, l.linkedDemand[0].plannedUseDate)
+          : null
+        
+        // Color by expiry status: red (<0), orange (0-30), green (>30)
+        let fillColor = "#22c55e" // green
+        if (l.daysToEffectiveExpiry < 0) fillColor = "#dc2626" // red
+        else if (l.daysToEffectiveExpiry <= 30) fillColor = "#f97316" // orange
+        
+        return {
+          id: l.id,
+          lot: l,
+          mrbAge: l.mrbAge!,
+          daysToExpiry: l.daysToEffectiveExpiry,
+          linkedDemandCount,
+          nearestUseDate,
+          fillColor,
+          // Priority flag: MRB age > 14 AND days to expiry < 30
+          isPriority: l.mrbAge! > 14 && l.daysToEffectiveExpiry < 30
+        }
+      })
   }, [filteredLots])
   
   // ===== QUALITY: Recert Pipeline =====
@@ -1431,40 +1451,115 @@ export function ShelfLifeTracking() {
               
               {/* Charts Row */}
               <div className="grid grid-cols-12 gap-4">
-                {/* MRB Age vs Days to Expiry */}
+                {/* MRB Age vs Days to Expiry - Triage Tool */}
                 <Card className="col-span-6 border border-gray-200">
                   <CardHeader className="py-3 px-4 border-b border-gray-100">
-                    <CardTitle className="text-sm font-bold text-gray-800">MRB Age vs Days to Effective Expiry</CardTitle>
-                    <p className="text-xs text-gray-500">Priority quadrant: high age + low days remaining (top-left)</p>
+                    <CardTitle className="text-sm font-bold text-gray-800">MRB Age vs Days to Effective Expiry (Triage)</CardTitle>
+                    <div className="flex items-center gap-4 mt-1">
+                      <span className="flex items-center gap-1.5 text-xs">
+                        <span className="w-3 h-3 rounded-full bg-red-600" /> Expired (x &lt; 0)
+                      </span>
+                      <span className="flex items-center gap-1.5 text-xs">
+                        <span className="w-3 h-3 rounded-full bg-orange-500" /> Expiring soon (0-30d)
+                      </span>
+                      <span className="flex items-center gap-1.5 text-xs">
+                        <span className="w-3 h-3 rounded-full bg-green-500" /> &gt; 30 days
+                      </span>
+                    </div>
                   </CardHeader>
                   <CardContent className="p-4">
-                    <div className="h-[300px]">
+                    <div className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
-                        <ScatterChart margin={{ left: 10, right: 20, bottom: 10 }}>
+                        <ScatterChart margin={{ left: 15, right: 20, bottom: 30, top: 10 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                          <XAxis type="number" dataKey="daysToExpiry" name="Days to Expiry" tick={{ fontSize: 11 }} label={{ value: 'Days to Effective Expiry', position: 'bottom', fontSize: 11 }} />
-                          <YAxis type="number" dataKey="mrbAge" name="MRB Age" tick={{ fontSize: 11 }} label={{ value: 'MRB Age (days)', angle: -90, position: 'insideLeft', fontSize: 11 }} />
-                          <ZAxis type="number" dataKey="qty" range={[50, 400]} />
+                          
+                          {/* Priority quadrant: MRB age > 14 AND days to expiry < 30 */}
+                          <ReferenceArea 
+                            x1={-60} 
+                            x2={30} 
+                            y1={14} 
+                            y2={100} 
+                            fill="#fef2f2" 
+                            fillOpacity={0.6} 
+                            stroke="#fca5a5" 
+                            strokeDasharray="4 4"
+                            label={{ value: 'Priority: will expire in MRB', position: 'insideTopLeft', fontSize: 10, fill: '#dc2626' }}
+                          />
+                          
+                          {/* Vertical line at 0 = Expires today */}
+                          <ReferenceLine 
+                            x={0} 
+                            stroke="#374151" 
+                            strokeWidth={2} 
+                            strokeDasharray="4 4"
+                            label={{ value: 'Expires today', position: 'top', fontSize: 10, fill: '#374151' }}
+                          />
+                          
+                          <XAxis 
+                            type="number" 
+                            dataKey="daysToExpiry" 
+                            name="Days until unusable" 
+                            tick={{ fontSize: 10 }} 
+                            domain={[-60, 90]}
+                            ticks={[-60, -30, 0, 30, 60, 90]}
+                            label={{ value: 'Days until unusable (Effective Expiry)', position: 'bottom', offset: 10, fontSize: 11 }} 
+                          />
+                          <YAxis 
+                            type="number" 
+                            dataKey="mrbAge" 
+                            name="MRB Age" 
+                            tick={{ fontSize: 10 }} 
+                            domain={[0, 'auto']}
+                            label={{ value: 'MRB Age (days)', angle: -90, position: 'insideLeft', fontSize: 11 }} 
+                          />
+                          {/* Bubble size = linked demand count */}
+                          <ZAxis type="number" dataKey="linkedDemandCount" range={[60, 400]} name="Linked demand" />
+                          
                           <Tooltip content={({ active, payload }) => {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload
                               return (
-                                <div className="bg-white p-2 border border-gray-200 rounded shadow-lg text-xs">
-                                  <p className="font-bold">{data.lot.lotBatch}</p>
-                                  <p>MRB Age: {data.mrbAge} days</p>
-                                  <p>Days to Expiry: {data.daysToExpiry}</p>
-                                  <p>Qty: {data.qty}</p>
+                                <div className="bg-white p-3 border border-gray-300 rounded shadow-lg text-xs max-w-xs">
+                                  <p className="font-bold text-sm text-gray-900">{data.lot.partNumber}</p>
+                                  <p className="font-mono text-blue-600">{data.lot.lotBatch}</p>
+                                  <div className="mt-2 space-y-1 text-gray-700">
+                                    <p><span className="text-gray-500">MRB Step:</span> {data.lot.mrbStep || "N/A"}</p>
+                                    <p><span className="text-gray-500">MRB Age:</span> <span className="font-bold">{data.mrbAge} days</span></p>
+                                    <p><span className="text-gray-500">Effective Expiry:</span> {data.lot.effectiveExpiryDate.toLocaleDateString()}</p>
+                                    <p><span className="text-gray-500">Days remaining:</span> <span className={`font-bold ${data.daysToExpiry < 0 ? "text-red-600" : data.daysToExpiry <= 30 ? "text-orange-600" : "text-green-600"}`}>{data.daysToExpiry}</span></p>
+                                    <p><span className="text-gray-500">Linked demand:</span> {data.linkedDemandCount} WO(s)</p>
+                                    {data.nearestUseDate && (
+                                      <p><span className="text-gray-500">Nearest use:</span> {data.nearestUseDate.toLocaleDateString()}</p>
+                                    )}
+                                  </div>
+                                  {data.isPriority && (
+                                    <div className="mt-2 px-2 py-1 bg-red-100 text-red-700 text-xs font-medium rounded">
+                                      PRIORITY: High MRB age + near expiry
+                                    </div>
+                                  )}
                                 </div>
                               )
                             }
                             return null
                           }} />
+                          
                           <Scatter
                             data={mrbScatterData}
-                            fill="#f97316"
-                            onClick={(data) => handleLotClick(data.lot)}
+                            onClick={(data) => {
+                              setSelectedMrbLotId(data.id)
+                              handleLotClick(data.lot)
+                            }}
                             className="cursor-pointer"
-                          />
+                          >
+                            {mrbScatterData.map((entry, index) => (
+                              <Cell 
+                                key={`cell-${index}`} 
+                                fill={entry.fillColor} 
+                                stroke={selectedMrbLotId === entry.id ? "#1d4ed8" : entry.fillColor}
+                                strokeWidth={selectedMrbLotId === entry.id ? 3 : 1}
+                              />
+                            ))}
+                          </Scatter>
                         </ScatterChart>
                       </ResponsiveContainer>
                     </div>
@@ -1508,8 +1603,19 @@ export function ShelfLifeTracking() {
               {/* MRB/Recert Worklist */}
               <Card className="border-2 border-gray-300">
                 <CardHeader className="py-4 px-5 border-b border-gray-200 bg-gray-50">
-                  <CardTitle className="text-lg font-bold text-gray-900">MRB / Recert Priority Worklist</CardTitle>
-                  <p className="text-sm text-gray-500">Lots in MRB or requiring recert — click row for details</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg font-bold text-gray-900">MRB / Recert Priority Worklist</CardTitle>
+                      <p className="text-sm text-gray-500">
+                        Start with <span className="text-red-600 font-semibold">red dots</span> (already expired) and <span className="text-orange-600 font-semibold">orange dots</span> (expires within 30 days), especially if they are blocking demand.
+                      </p>
+                    </div>
+                    {selectedMrbLotId && (
+                      <Button variant="outline" size="sm" onClick={() => setSelectedMrbLotId(null)}>
+                        Clear Filter
+                      </Button>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="overflow-x-auto max-h-[400px]">
@@ -1530,8 +1636,9 @@ export function ShelfLifeTracking() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {allLots
+                        {filteredLots
                           .filter(l => l.mrbStatus !== "None" || (l.recertAllowed && l.recertCyclesRemaining > 0 && l.daysToEffectiveExpiry <= 30))
+                          .filter(l => selectedMrbLotId ? l.id === selectedMrbLotId : true)
                           .sort((a, b) => a.daysToEffectiveExpiry - b.daysToEffectiveExpiry)
                           .slice(0, 50)
                           .map(lot => {
