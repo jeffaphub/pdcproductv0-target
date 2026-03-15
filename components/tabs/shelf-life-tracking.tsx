@@ -11,11 +11,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { AlertTriangle, Calendar, Clock, Package, Thermometer, MapPin, Search, X, RefreshCw, FileText, Users, Clipboard, Target, Info, ChevronRight, TrendingUp, Layers, Snowflake, BarChart3, ArrowRight } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend, ScatterChart, Scatter, ZAxis, LineChart, Line, ComposedChart, Area, ReferenceLine, ReferenceArea } from "recharts"
+import { MaterialLineOfBalance } from "./material-line-of-balance"
 
 // ===== TYPES =====
 type LocationBucket = "Warehouse" | "WIP" | "Shop Floor" | "MRB-Hold" | "Cold Storage"
 type RiskLens = "Expiring Soon" | "Use-First" | "False Coverage"
-type Persona = "Planner / Production Control" | "Stores / Warehousing" | "Quality / MRB" | "Program / PDM"
+type Persona = "Planner / Production Control" | "Stores / Warehousing" | "Quality / MRB" | "Program / PDM" | "Material LOB"
 type MRBStatus = "None" | "Pending Review" | "Disposition Required" | "Rework" | "Scrap Pending"
 type RecertStatus = "Due for recert" | "In lab" | "Passed" | "Failed" | "Not eligible"
 
@@ -1089,7 +1090,7 @@ export function ShelfLifeTracking() {
           
           {/* Persona Tabs */}
           <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
-            {(["Planner / Production Control", "Stores / Warehousing", "Quality / MRB", "Program / PDM"] as Persona[]).map(persona => (
+            {(["Planner / Production Control", "Stores / Warehousing", "Quality / MRB", "Program / PDM", "Material LOB"] as Persona[]).map(persona => (
               <button
                 key={persona}
                 onClick={() => { setActivePersona(persona); clearChartFilter(); }}
@@ -2215,6 +2216,10 @@ export function ShelfLifeTracking() {
                 </CardContent>
               </Card>
             </>
+          )}
+          
+          {activePersona === "Material LOB" && (
+            <MaterialLineOfBalance />
           )}
         </div>
         
