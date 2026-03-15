@@ -31,6 +31,7 @@ import { OpsShopFloor } from "@/components/tabs/ops-shop-floor"
 import { OpsEnterpriseIntel } from "@/components/tabs/ops-enterprise-intel"
 import { OTDTracking } from "@/components/tabs/otd-tracking"
 import { ShelfLifeTracking } from "@/components/tabs/shelf-life-tracking"
+import { MaterialLineOfBalance } from "@/components/tabs/material-line-of-balance"
 
 export type TabId =
   | "standard-cost"
@@ -61,6 +62,7 @@ export type TabId =
   | "ops-enterprise-intel"
   | "otd-tracking"
   | "shelf-life"
+  | "material-lob"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -111,6 +113,7 @@ export default function Home() {
           {activeTab === "ops-enterprise-intel" && <OpsEnterpriseIntel />}
           {activeTab === "otd-tracking" && <OTDTracking />}
           {activeTab === "shelf-life" && <ShelfLifeTracking />}
+        {activeTab === "material-lob" && <MaterialLineOfBalance />}
         </main>
       </div>
     </div>
