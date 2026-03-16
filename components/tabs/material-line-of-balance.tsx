@@ -122,13 +122,21 @@ const TAB_CONFIG: { id: TabId; label: string; icon: React.ReactNode }[] = [
 ]
 
 // ===== DATA GENERATION =====
+// Simple seeded random for consistent data per program
+function seededRandom(seed: number) {
+  const x = Math.sin(seed++) * 10000
+  return x - Math.floor(x)
+}
+
 function generateWeekLabel(weeksFromNow: number): string {
   const date = new Date()
   date.setDate(date.getDate() + weeksFromNow * 7)
   return `W${String(Math.ceil((date.getDate() + new Date(date.getFullYear(), date.getMonth(), 1).getDay()) / 7)).padStart(2, "0")} ${date.toLocaleDateString("en-US", { month: "short" })}`
 }
 
-function generateTimeBuckets(weeks: number = 24): TimeBucket[] {
+function generateTimeBuckets(weeks: number = 24, program: string = "F-35"): TimeBucket[] {
+  // Create a seed based on program name so data varies per program
+  const programSeed = program.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
   const buckets: TimeBucket[] = []
   
   // Cumulative counters - all start at 0 and only increase
@@ -139,15 +147,17 @@ function generateTimeBuckets(weeks: number = 24): TimeBucket[] {
   let cumulativePRsPOs = 0
   let cumulativeSupplierCommits = 0
   
-  // Initial inventory contribution (one-time at week 0)
-  const initialInventory = 600 + Math.floor(Math.random() * 200)
+  // Initial inventory contribution (one-time at week 0) - varies by program
+  const initialInventory = 400 + Math.floor(seededRandom(programSeed) * 400)
   
   for (let i = 0; i < weeks; i++) {
     const date = new Date()
     date.setDate(date.getDate() + i * 7)
+    const weekSeed = programSeed + i * 7
     
-    // Weekly demand - relatively steady with some variation
-    const weeklyDemand = 80 + Math.floor(Math.random() * 40)
+    // Weekly demand - varies by program (some programs have higher demand)
+    const baseDemand = 60 + Math.floor(seededRandom(programSeed + 1) * 60)
+    const weeklyDemand = baseDemand + Math.floor(seededRandom(weekSeed) * 40)
     cumulativeDemand += weeklyDemand
     
     // Supply contributions by source - cumulative (always increasing)
@@ -155,20 +165,25 @@ function generateTimeBuckets(weeks: number = 24): TimeBucket[] {
     const inventoryContrib = i === 0 ? initialInventory : 0
     cumulativeInventory += inventoryContrib
     
-    // WIP: steady flow
-    const wipContrib = 15 + Math.floor(Math.random() * 20)
+    // WIP: steady flow - varies by program
+    const baseWip = 10 + Math.floor(seededRandom(programSeed + 2) * 15)
+    const wipContrib = baseWip + Math.floor(seededRandom(weekSeed + 1) * 20)
     cumulativeWIP += wipContrib
     
-    // Planned Make: ramps up
-    const plannedMakeContrib = i < 4 ? 10 + Math.floor(Math.random() * 10) : 25 + Math.floor(Math.random() * 20)
+    // Planned Make: ramps up - varies by program
+    const basePlannedMake = 5 + Math.floor(seededRandom(programSeed + 3) * 15)
+    const plannedMakeContrib = i < 4 ? basePlannedMake + Math.floor(seededRandom(weekSeed + 2) * 10) : basePlannedMake * 2 + Math.floor(seededRandom(weekSeed + 2) * 20)
     cumulativePlannedMake += plannedMakeContrib
     
-    // PRs/POs: starts slow, accelerates
-    const prsPOsContrib = i < 6 ? 5 + Math.floor(Math.random() * 10) : 20 + Math.floor(Math.random() * 25)
+    // PRs/POs: starts slow, accelerates - varies by program
+    const basePOs = 3 + Math.floor(seededRandom(programSeed + 4) * 10)
+    const prsPOsContrib = i < 6 ? basePOs + Math.floor(seededRandom(weekSeed + 3) * 10) : basePOs * 3 + Math.floor(seededRandom(weekSeed + 3) * 25)
     cumulativePRsPOs += prsPOsContrib
     
-    // Supplier Commits: delayed start, then ramps
-    const supplierCommitsContrib = i < 10 ? 0 : 15 + Math.floor(Math.random() * 20)
+    // Supplier Commits: delayed start, then ramps - varies by program
+    const baseCommits = Math.floor(seededRandom(programSeed + 5) * 10)
+    const commitStartWeek = 6 + Math.floor(seededRandom(programSeed + 6) * 6) // Varies 6-12 by program
+    const supplierCommitsContrib = i < commitStartWeek ? 0 : 10 + baseCommits + Math.floor(seededRandom(weekSeed + 4) * 20)
     cumulativeSupplierCommits += supplierCommitsContrib
     
     const cumulativeTotalSupply = cumulativeInventory + cumulativeWIP + cumulativePlannedMake + cumulativePRsPOs + cumulativeSupplierCommits
@@ -209,48 +224,62 @@ function generateTimeBuckets(weeks: number = 24): TimeBucket[] {
   return buckets
 }
 
-function generateAssemblies(): Assembly[] {
+function generateAssemblies(program: string): Assembly[] {
+  const programSeed = program.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
+  
   return assemblies.map((name, i) => {
-    const hasShortage = i < 5
-    const shortageStart = hasShortage ? 6 + i : null
-    const recoveryWeekNum = hasShortage ? 12 + i : null
+    const asmSeed = programSeed + i * 17
+    // Which assemblies have shortage varies by program
+    const hasShortage = seededRandom(asmSeed) > 0.35
+    const shortageStart = hasShortage ? 4 + Math.floor(seededRandom(asmSeed + 1) * 8) : null
+    const recoveryWeekNum = hasShortage ? shortageStart! + 4 + Math.floor(seededRandom(asmSeed + 2) * 6) : null
+    
+    // Suppliers exposed vary by program
+    const supplierIdx1 = Math.floor(seededRandom(asmSeed + 3) * suppliers.length)
+    const supplierIdx2 = (supplierIdx1 + 1 + Math.floor(seededRandom(asmSeed + 4) * (suppliers.length - 1))) % suppliers.length
+    
     return {
       id: `asm-${i}`,
       name,
-      partFamily: ["Structural", "Electrical", "Hydraulic", "Avionics"][i % 4],
-      shortageQty: hasShortage ? 10 + Math.floor(Math.random() * 50) : 0,
+      partFamily: ["Structural", "Electrical", "Hydraulic", "Avionics"][Math.floor(seededRandom(asmSeed + 5) * 4)],
+      shortageQty: hasShortage ? 10 + Math.floor(seededRandom(asmSeed + 6) * 60) : 0,
       firstShortageWeek: shortageStart !== null ? generateWeekLabel(shortageStart) : null,
       recoveryWeek: recoveryWeekNum !== null ? generateWeekLabel(recoveryWeekNum) : null,
-      mainDriver: hasShortage ? rootCauses[i % rootCauses.length] : null,
-      impactedPartCount: hasShortage ? 2 + Math.floor(Math.random() * 8) : 0,
-      supplierExposure: [suppliers[i % suppliers.length], suppliers[(i + 1) % suppliers.length]],
+      mainDriver: hasShortage ? rootCauses[Math.floor(seededRandom(asmSeed + 7) * rootCauses.length)] : null,
+      impactedPartCount: hasShortage ? 2 + Math.floor(seededRandom(asmSeed + 8) * 8) : 0,
+      supplierExposure: [suppliers[supplierIdx1], suppliers[supplierIdx2]],
       weeklyStatus: Array.from({ length: 16 }, (_, w) => {
-        if (!hasShortage) return "Covered"
-        if (w >= 6 + i && w <= 10 + i) return "Shortage"
-        if (w >= 4 + i && w <= 12 + i) return "Partial"
+        if (!hasShortage || shortageStart === null) return "Covered"
+        if (w >= shortageStart && w <= shortageStart + 4) return "Shortage"
+        if (w >= shortageStart - 2 && w <= shortageStart + 6) return "Partial"
         return "Covered"
       })
     }
   })
 }
 
-function generatePartNumbers(assemblyList: Assembly[]): PartNumber[] {
+function generatePartNumbers(assemblyList: Assembly[], program: string): PartNumber[] {
   const parts: PartNumber[] = []
+  const programSeed = program.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
   
   assemblyList.forEach((asm, asmIdx) => {
-    const partCount = 3 + Math.floor(Math.random() * 5)
+    const partSeed = programSeed + asmIdx * 31
+    const partCount = 3 + Math.floor(seededRandom(partSeed) * 5)
+    
     for (let p = 0; p < partCount; p++) {
-      const hasShortage = asm.shortageQty > 0 && p < 3
-      const shortageStartWeekNum = hasShortage ? 6 + asmIdx + p : null
+      const pSeed = partSeed + p * 13
+      const hasShortage = asm.shortageQty > 0 && seededRandom(pSeed) > 0.4
+      const shortageStartWeekNum = hasShortage ? 4 + Math.floor(seededRandom(pSeed + 1) * 8) : null
       
       const weeklyData: PartNumber["weeklyData"] = []
-      let runningStock = 20
+      let runningStock = 15 + Math.floor(seededRandom(pSeed + 2) * 20)
       
       for (let w = 0; w < 16; w++) {
-        const demand = 5 + Math.floor(Math.random() * 15)
+        const wSeed = pSeed + w * 7
+        const demand = 5 + Math.floor(seededRandom(wSeed) * 15)
         const isInShortageWindow = hasShortage && shortageStartWeekNum !== null && w >= shortageStartWeekNum && w <= shortageStartWeekNum + 4
-        const supplyBase = isInShortageWindow ? demand * 0.6 : demand * 1.1
-        const supply = Math.floor(supplyBase + Math.random() * 5)
+        const supplyBase = isInShortageWindow ? demand * 0.5 : demand * 1.15
+        const supply = Math.floor(supplyBase + seededRandom(wSeed + 1) * 5)
         runningStock = runningStock + supply - demand
         weeklyData.push({
           demand,
@@ -260,21 +289,24 @@ function generatePartNumbers(assemblyList: Assembly[]): PartNumber[] {
         })
       }
       
+      // Supplier assignment varies by program
+      const supplierIdx = Math.floor(seededRandom(pSeed + 3) * suppliers.length)
+      
       parts.push({
         id: `pn-${asmIdx}-${p}`,
-        partNumber: `PN-${1000 + asmIdx * 100 + p}`,
+        partNumber: `PN-${1000 + Math.floor(seededRandom(pSeed + 4) * 9000)}`,
         description: `${asm.name} Component ${p + 1}`,
-        commodity: commodities[p % commodities.length],
-        supplier: suppliers[(asmIdx + p) % suppliers.length],
-        leadTime: 14 + Math.floor(Math.random() * 60),
-        moq: [1, 10, 25, 50, 100][p % 5],
-        isCritical: p === 0 && hasShortage,
-        isSoleSource: p % 3 === 0,
+        commodity: commodities[Math.floor(seededRandom(pSeed + 5) * commodities.length)],
+        supplier: suppliers[supplierIdx],
+        leadTime: 14 + Math.floor(seededRandom(pSeed + 6) * 60),
+        moq: [1, 10, 25, 50, 100][Math.floor(seededRandom(pSeed + 7) * 5)],
+        isCritical: hasShortage && seededRandom(pSeed + 8) > 0.6,
+        isSoleSource: seededRandom(pSeed + 9) > 0.7,
         assemblyId: asm.id,
         weeklyData,
         shortageStartWeek: shortageStartWeekNum !== null ? generateWeekLabel(shortageStartWeekNum) : null,
         recoveryWeek: shortageStartWeekNum !== null ? generateWeekLabel(shortageStartWeekNum + 5) : null,
-        rootCause: hasShortage ? rootCauses[(asmIdx + p) % rootCauses.length] : null
+        rootCause: hasShortage ? rootCauses[Math.floor(seededRandom(pSeed + 10) * rootCauses.length)] : null
       })
     }
   })
@@ -345,14 +377,25 @@ export function MaterialLineOfBalance() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedWeek, setSelectedWeek] = useState<number | null>(null)
   
-  // Generate mock data
-  const timeBuckets = useMemo(() => generateTimeBuckets(parseInt(timeWindow)), [timeWindow])
-  const assemblyList = useMemo(() => generateAssemblies(), [])
-  const partNumbers = useMemo(() => generatePartNumbers(assemblyList), [assemblyList])
+  // Generate mock data - all vary by program selection
+  const timeBuckets = useMemo(() => generateTimeBuckets(parseInt(timeWindow), selectedProgram), [timeWindow, selectedProgram])
+  const assemblyList = useMemo(() => generateAssemblies(selectedProgram), [selectedProgram])
+  const partNumbers = useMemo(() => generatePartNumbers(assemblyList, selectedProgram), [assemblyList, selectedProgram])
   const activities = useMemo(() => generateActivities(partNumbers, assemblyList), [partNumbers, assemblyList])
   const upcomingShortages = useMemo(() => generateUpcomingShortages(assemblyList), [assemblyList])
   
   // Apply global filters to data
+  const filteredAssemblies = useMemo(() => {
+    let filtered = assemblyList
+    if (supplierFilter !== "All") {
+      filtered = filtered.filter(a => a.supplierExposure.includes(supplierFilter))
+    }
+    if (commodityFilter !== "All") {
+      filtered = filtered.filter(a => a.partFamily === commodityFilter)
+    }
+    return filtered
+  }, [assemblyList, supplierFilter, commodityFilter])
+  
   const filteredShortages = useMemo(() => {
     let filtered = upcomingShortages
     if (supplierFilter !== "All") {
@@ -409,7 +452,7 @@ export function MaterialLineOfBalance() {
     const lastShortageIdx = timeBuckets.map((b, i) => b.isShortageWindow ? i : -1).filter(i => i >= 0).pop()
     const recoveryWeek = lastShortageIdx !== undefined && lastShortageIdx < timeBuckets.length - 1 ? timeBuckets[lastShortageIdx + 1]?.label || "—" : "—"
     const criticalParts = filteredParts.filter(p => p.isCritical).length
-    const atRiskAssemblies = assemblyList.filter(a => a.shortageQty > 0).length
+    const atRiskAssemblies = filteredAssemblies.filter(a => a.shortageQty > 0).length
     
     return {
       totalShortage,
@@ -421,7 +464,7 @@ export function MaterialLineOfBalance() {
       criticalParts,
       atRiskAssemblies
     }
-  }, [timeBuckets, filteredShortages, filteredParts, assemblyList])
+  }, [timeBuckets, filteredShortages, filteredParts, filteredAssemblies])
   
   // Handlers
   const handlePartClick = (part: PartNumber) => {
@@ -561,7 +604,7 @@ export function MaterialLineOfBalance() {
       
       {activeTab === "assembly" && (
         <AssemblyTab 
-          assemblies={assemblyList}
+          assemblies={filteredAssemblies}
           weekLabels={weekLabels}
           onAssemblyClick={handleAssemblyClick}
           supplierFilter={supplierFilter}
