@@ -682,49 +682,113 @@ export function CBOMLifecycle() {
             
             {/* Main Visuals Row */}
             <div className="grid grid-cols-2 gap-6">
-              {/* Cost Roll-Up Waterfall */}
+              {/* Cost Roll-Up Waterfall - Custom SVG implementation */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
                   <CardTitle className="text-sm font-bold text-gray-800">Program Cost Roll-Up (Waterfall)</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <div className="h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={waterfallData} margin={{ left: 20, right: 20, bottom: 10 }} barCategoryGap="20%">
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
-                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`} domain={[0, 'auto']} />
-                        <Tooltip 
-                          formatter={(value: number, name: string) => {
-                            if (name === "base") return null
-                            return formatCurrency(value)
-                          }}
-                          content={({ active, payload, label }) => {
-                            if (active && payload && payload.length) {
-                              const data = payload[0].payload
-                              const displayValue = data.isTotal ? data.value : (data.fill === COLORS.negative ? -data.value : data.value)
-                              return (
-                                <div className="bg-white p-2 border border-gray-200 rounded shadow text-xs">
-                                  <p className="font-bold">{label}</p>
-                                  <p className={displayValue < 0 ? "text-red-600" : displayValue > 0 && !data.isTotal ? "text-green-600" : ""}>
-                                    {data.isTotal ? "Total: " : "Change: "}{displayValue < 0 ? "-" : (data.isTotal ? "" : "+")}{formatCurrency(Math.abs(displayValue))}
-                                  </p>
-                                </div>
-                              )
-                            }
-                            return null
-                          }}
-                        />
-                        {/* Invisible base bar for positioning floating bars */}
-                        <Bar dataKey="base" stackId="waterfall" fill="transparent" />
-                        {/* Visible value bar */}
-                        <Bar dataKey="value" stackId="waterfall" radius={[4, 4, 0, 0]}>
-                          {waterfallData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.fill} />
+                  <div className="h-[300px] relative">
+                    {(() => {
+                      // Calculate max value for scaling
+                      const maxValue = Math.max(baselineCost, totalCost) * 1.1
+                      const chartHeight = 240
+                      const chartWidth = 600
+                      const barWidth = 50
+                      const barGap = 25
+                      const leftMargin = 60
+                      const bottomMargin = 50
+                      
+                      // Y-axis scale
+                      const scaleY = (val: number) => chartHeight - (val / maxValue) * chartHeight
+                      
+                      // Generate Y-axis ticks
+                      const yTicks = [0, maxValue * 0.25, maxValue * 0.5, maxValue * 0.75, maxValue]
+                      
+                      return (
+                        <svg width="100%" height="100%" viewBox={`0 0 ${chartWidth + leftMargin + 20} ${chartHeight + bottomMargin + 10}`} preserveAspectRatio="xMidYMid meet">
+                          {/* Grid lines */}
+                          {yTicks.map((tick, i) => (
+                            <g key={i}>
+                              <line 
+                                x1={leftMargin} 
+                                y1={scaleY(tick)} 
+                                x2={chartWidth + leftMargin} 
+                                y2={scaleY(tick)} 
+                                stroke="#e5e7eb" 
+                                strokeDasharray="3 3" 
+                              />
+                              <text 
+                                x={leftMargin - 8} 
+                                y={scaleY(tick) + 4} 
+                                fontSize="10" 
+                                textAnchor="end" 
+                                fill="#6b7280"
+                              >
+                                ${(tick / 1000000).toFixed(0)}M
+                              </text>
+                            </g>
                           ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
+                          
+                          {/* Bars */}
+                          {waterfallData.map((item, index) => {
+                            const x = leftMargin + index * (barWidth + barGap) + barGap / 2
+                            const y1 = scaleY(item.base + item.value) // Top of bar
+                            const y2 = scaleY(item.base) // Bottom of bar
+                            const barHeight = y2 - y1
+                            
+                            return (
+                              <g key={item.name}>
+                                {/* Bar */}
+                                <rect
+                                  x={x}
+                                  y={y1}
+                                  width={barWidth}
+                                  height={Math.max(barHeight, 2)}
+                                  fill={item.fill}
+                                  rx={4}
+                                  ry={4}
+                                />
+                                {/* Connector line to next bar (except for last) */}
+                                {index < waterfallData.length - 1 && !waterfallData[index + 1].isTotal && (
+                                  <line
+                                    x1={x + barWidth}
+                                    y1={scaleY(item.base + item.value)}
+                                    x2={x + barWidth + barGap}
+                                    y2={scaleY(item.base + item.value)}
+                                    stroke="#94a3b8"
+                                    strokeWidth={1}
+                                    strokeDasharray="4 2"
+                                  />
+                                )}
+                                {/* X-axis label */}
+                                <text
+                                  x={x + barWidth / 2}
+                                  y={chartHeight + 15}
+                                  fontSize="9"
+                                  textAnchor="end"
+                                  fill="#374151"
+                                  transform={`rotate(-30, ${x + barWidth / 2}, ${chartHeight + 15})`}
+                                >
+                                  {item.name}
+                                </text>
+                                {/* Value label on bar */}
+                                <text
+                                  x={x + barWidth / 2}
+                                  y={y1 - 5}
+                                  fontSize="8"
+                                  textAnchor="middle"
+                                  fill={item.isTotal ? "#1e3a5f" : item.fill === COLORS.negative ? "#dc2626" : "#059669"}
+                                  fontWeight="bold"
+                                >
+                                  {item.isTotal ? "" : (item.fill === COLORS.negative ? "-" : "+")}{formatCurrency(item.value).replace("$", "$")}
+                                </text>
+                              </g>
+                            )
+                          })}
+                        </svg>
+                      )
+                    })()}
                   </div>
                 </CardContent>
               </Card>
