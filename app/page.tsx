@@ -32,6 +32,7 @@ import { OpsEnterpriseIntel } from "@/components/tabs/ops-enterprise-intel"
 import { OTDTracking } from "@/components/tabs/otd-tracking"
 import { ShelfLifeTracking } from "@/components/tabs/shelf-life-tracking"
 import { MaterialLineOfBalance } from "@/components/tabs/material-line-of-balance"
+import { CBOMLifecycle } from "@/components/tabs/cbom-lifecycle"
 
 export type TabId =
   | "standard-cost"
@@ -63,6 +64,7 @@ export type TabId =
   | "otd-tracking"
   | "shelf-life"
   | "material-lob"
+  | "cbom-lifecycle"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -114,6 +116,7 @@ export default function Home() {
           {activeTab === "otd-tracking" && <OTDTracking />}
           {activeTab === "shelf-life" && <ShelfLifeTracking />}
         {activeTab === "material-lob" && <MaterialLineOfBalance />}
+          {activeTab === "cbom-lifecycle" && <CBOMLifecycle />}
         </main>
       </div>
     </div>
