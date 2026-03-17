@@ -725,7 +725,7 @@ export function CBOMLifecycle() {
                                 textAnchor="end" 
                                 fill="#6b7280"
                               >
-                                ${(tick / 1000000).toFixed(0)}M
+                                {`$${(tick / 1000000).toFixed(0)}M`}
                               </text>
                             </g>
                           ))}
@@ -781,7 +781,7 @@ export function CBOMLifecycle() {
                                   fill={item.isTotal ? "#1e3a5f" : item.fill === COLORS.negative ? "#dc2626" : "#059669"}
                                   fontWeight="bold"
                                 >
-                                  {item.isTotal ? "" : (item.fill === COLORS.negative ? "-" : "+")}{formatCurrency(item.value).replace("$", "$")}
+                                  {item.isTotal ? "" : (item.fill === COLORS.negative ? "-" : "+")}{formatCurrency(item.value)}
                                 </text>
                               </g>
                             )
