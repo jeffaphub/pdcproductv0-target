@@ -462,20 +462,66 @@ export function CBOMLifecycle() {
   const totalDelta = totalCost - baselineCost
   const totalDeltaPercent = (totalDelta / baselineCost) * 100
   
-  // Waterfall data
+  // Waterfall data - proper floating bar structure
   const waterfallData = useMemo(() => {
     const seed = selectedProgram.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
-    return [
-      { name: "Baseline", value: baselineCost, fill: COLORS.primary },
-      { name: "Engineering", value: seededRandom(seed) * 1500000 - 500000, fill: COLORS.blue },
-      { name: "Manufacturing", value: seededRandom(seed + 1) * 800000 - 200000, fill: COLORS.purple },
-      { name: "Supplier Pricing", value: seededRandom(seed + 2) * 2000000, fill: COLORS.warning },
-      { name: "Quantity", value: seededRandom(seed + 3) * 1000000 - 300000, fill: COLORS.cyan },
-      { name: "Substitutions", value: seededRandom(seed + 4) * 500000 - 400000, fill: COLORS.positive },
-      { name: "Actuals", value: seededRandom(seed + 5) * 600000, fill: COLORS.neutral },
-      { name: "Current", value: totalCost, fill: COLORS.primary }
+    
+    // Generate change values that sum to the difference between baseline and current
+    const engineering = seededRandom(seed) * 1500000 - 500000
+    const manufacturing = seededRandom(seed + 1) * 800000 - 200000
+    const supplierPricing = seededRandom(seed + 2) * 2000000
+    const quantity = seededRandom(seed + 3) * 1000000 - 300000
+    const substitutions = seededRandom(seed + 4) * 500000 - 400000
+    
+    // Adjust actuals to make the sum equal to totalDelta
+    const changesSum = engineering + manufacturing + supplierPricing + quantity + substitutions
+    const actuals = totalDelta - changesSum
+    
+    // Build waterfall with running total for base positioning
+    let runningTotal = baselineCost
+    
+    const data = [
+      { name: "Baseline", base: 0, value: baselineCost, fill: COLORS.primary, isTotal: true },
     ]
-  }, [selectedProgram, baselineCost, totalCost])
+    
+    // Add intermediate changes as floating bars
+    const changes = [
+      { name: "Engineering", delta: engineering, fill: COLORS.blue },
+      { name: "Manufacturing", delta: manufacturing, fill: COLORS.purple },
+      { name: "Supplier Pricing", delta: supplierPricing, fill: COLORS.warning },
+      { name: "Quantity", delta: quantity, fill: COLORS.cyan },
+      { name: "Substitutions", delta: substitutions, fill: COLORS.positive },
+      { name: "Actuals", delta: actuals, fill: COLORS.neutral },
+    ]
+    
+    changes.forEach(change => {
+      if (change.delta >= 0) {
+        // Positive change: bar starts at runningTotal and goes up
+        data.push({
+          name: change.name,
+          base: runningTotal,
+          value: change.delta,
+          fill: change.fill,
+          isTotal: false
+        })
+      } else {
+        // Negative change: bar starts at runningTotal + delta (lower) and goes up to runningTotal
+        data.push({
+          name: change.name,
+          base: runningTotal + change.delta,
+          value: Math.abs(change.delta),
+          fill: COLORS.negative, // Red for negative
+          isTotal: false
+        })
+      }
+      runningTotal += change.delta
+    })
+    
+    // Final total
+    data.push({ name: "Current", base: 0, value: totalCost, fill: COLORS.primary, isTotal: true })
+    
+    return data
+  }, [selectedProgram, baselineCost, totalCost, totalDelta])
   
   // Cost trend data
   const costTrendData = useMemo(() => {
@@ -644,12 +690,35 @@ export function CBOMLifecycle() {
                 <CardContent className="p-4">
                   <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={waterfallData} margin={{ left: 20, right: 20 }}>
+                      <BarChart data={waterfallData} margin={{ left: 20, right: 20, bottom: 10 }} barCategoryGap="20%">
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
-                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`} />
-                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                        <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`} domain={[0, 'auto']} />
+                        <Tooltip 
+                          formatter={(value: number, name: string) => {
+                            if (name === "base") return null
+                            return formatCurrency(value)
+                          }}
+                          content={({ active, payload, label }) => {
+                            if (active && payload && payload.length) {
+                              const data = payload[0].payload
+                              const displayValue = data.isTotal ? data.value : (data.fill === COLORS.negative ? -data.value : data.value)
+                              return (
+                                <div className="bg-white p-2 border border-gray-200 rounded shadow text-xs">
+                                  <p className="font-bold">{label}</p>
+                                  <p className={displayValue < 0 ? "text-red-600" : displayValue > 0 && !data.isTotal ? "text-green-600" : ""}>
+                                    {data.isTotal ? "Total: " : "Change: "}{displayValue < 0 ? "-" : (data.isTotal ? "" : "+")}{formatCurrency(Math.abs(displayValue))}
+                                  </p>
+                                </div>
+                              )
+                            }
+                            return null
+                          }}
+                        />
+                        {/* Invisible base bar for positioning floating bars */}
+                        <Bar dataKey="base" stackId="waterfall" fill="transparent" />
+                        {/* Visible value bar */}
+                        <Bar dataKey="value" stackId="waterfall" radius={[4, 4, 0, 0]}>
                           {waterfallData.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={entry.fill} />
                           ))}
