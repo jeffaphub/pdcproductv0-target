@@ -731,18 +731,59 @@ export function ShelfLifeTracking() {
     }
   }, [selectedHorizon])
   
-  // ===== TIMELINE DATA (Planner) =====
-  const timelineData = useMemo(() => {
+  // ===== TIMELINE DATA (Planner) - Split by recertifiable/non-recertifiable =====
+  const [showRecertMarkers, setShowRecertMarkers] = useState(true)
+  const [showExtendedShelfLife, setShowExtendedShelfLife] = useState(true)
+  
+  const timelineDataEnhanced = useMemo(() => {
     return filteredLots
       .filter(l => l.linkedDemand.length > 0)
       .map(l => {
         const earliestDemand = l.linkedDemand.reduce((min, d) => d.plannedUseDate < min.plannedUseDate ? d : min, l.linkedDemand[0])
         const daysToUse = Math.floor((earliestDemand.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
-        return { ...l, earliestDemand, daysToUse }
+        
+        // Calculate total demand quantity pegged to this lot
+        const totalDemandQty = l.linkedDemand.reduce((sum, d) => sum + d.qty, 0)
+        const qtyShortfall = totalDemandQty - l.quantity
+        const hasQtyShortfall = qtyShortfall > 0
+        
+        // Calculate recert deadline (labLeadTimeDays before expiry) and extended life
+        const recertDeadlineDays = l.recertAllowed && l.recertCyclesRemaining > 0 && l.labLeadTimeDays
+          ? Math.max(l.daysToEffectiveExpiry - l.labLeadTimeDays, 0)
+          : null
+        
+        // Extended shelf life after recert (assume 6 months / 180 days extension per cycle)
+        const extendedLifeDays = l.recertAllowed && l.recertCyclesRemaining > 0 
+          ? 180 * l.recertCyclesRemaining 
+          : 0
+        
+        return { 
+          ...l, 
+          earliestDemand, 
+          daysToUse,
+          totalDemandQty,
+          qtyShortfall,
+          hasQtyShortfall,
+          recertDeadlineDays,
+          extendedLifeDays
+        }
       })
       .sort((a, b) => a.daysToEffectiveExpiry - b.daysToEffectiveExpiry)
-      .slice(0, 20)
   }, [filteredLots])
+  
+  // Split into recertifiable and non-recertifiable
+  const recertifiableLots = useMemo(() => 
+    timelineDataEnhanced.filter(l => l.recertAllowed && l.recertCyclesRemaining > 0).slice(0, 15),
+    [timelineDataEnhanced]
+  )
+  
+  const nonRecertifiableLots = useMemo(() => 
+    timelineDataEnhanced.filter(l => !l.recertAllowed || l.recertCyclesRemaining === 0).slice(0, 15),
+    [timelineDataEnhanced]
+  )
+  
+  // Keep legacy timelineData for backward compatibility
+  const timelineData = useMemo(() => timelineDataEnhanced.slice(0, 20), [timelineDataEnhanced])
   
   // ===== STORES: Location Health Chart Data =====
   const locationHealthData = useMemo(() => {
@@ -1222,126 +1263,386 @@ export function ShelfLifeTracking() {
                 ))}
               </div>
               
-              {/* Pegging Timeline */}
+              {/* Pegging Timeline - Split View */}
               <Card className="border-2 border-gray-300">
                 <CardHeader className="py-4 px-5 border-b border-gray-200 bg-gray-50">
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-lg font-bold text-gray-900">Pegged Use vs Effective Expiry (Timeline)</CardTitle>
-                      <p className="text-sm text-gray-500 mt-0.5">Top 20 lots by soonest expiry. OK = all uses before expiry (blue only). Pegged risk = mixed (some blue, some red). False coverage = all uses after expiry (red only).</p>
+                      <p className="text-sm text-gray-500 mt-0.5">Split by recertification eligibility. Shows quantity coverage and timing conflicts.</p>
                     </div>
-                    <div className="flex items-center gap-4 text-xs">
-                      <span className="flex items-center gap-1.5"><span className="w-4 h-2 bg-green-500 rounded" /> Life remaining</span>
-                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-5 bg-gray-800 rounded" /> Expiry</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full" /> Safe use (before expiry)</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-red-600 rounded-full ring-2 ring-red-200" /> Conflict (after expiry)</span>
+                    <div className="flex items-center gap-6">
+                      {/* Toggles for recert view */}
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={showRecertMarkers} 
+                            onChange={(e) => setShowRecertMarkers(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                          />
+                          <span className="text-xs text-gray-600">Show recert deadlines</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={showExtendedShelfLife} 
+                            onChange={(e) => setShowExtendedShelfLife(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                          />
+                          <span className="text-xs text-gray-600">Show extended life</span>
+                        </label>
+                      </div>
                     </div>
+                  </div>
+                  {/* Legend */}
+                  <div className="flex flex-wrap items-center gap-4 mt-3 text-xs">
+                    <span className="flex items-center gap-1.5"><span className="w-4 h-2 bg-green-500 rounded" /> Life remaining</span>
+                    <span className="flex items-center gap-1.5"><span className="w-4 h-2 bg-purple-300 rounded border border-dashed border-purple-500" /> Extended (post-recert)</span>
+                    <span className="flex items-center gap-1.5"><span className="w-1.5 h-5 bg-gray-800 rounded" /> Expiry</span>
+                    <span className="flex items-center gap-1.5"><span className="w-0.5 h-5 bg-purple-600 border-l-2 border-dashed border-purple-600" /> Recert deadline</span>
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full" /> Safe use</span>
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-blue-600 rounded-full ring-2 ring-orange-400" /> Safe but qty insufficient</span>
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-red-600 rounded-full ring-2 ring-red-200" /> After expiry</span>
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  <div className="overflow-x-auto">
-                    {/* Header */}
-                    <div className="flex border-b border-gray-200 bg-gray-100">
-                      <div className="w-48 flex-shrink-0 p-3 text-xs font-bold text-gray-700">Lot / Part</div>
-                      <div className="flex-1 relative h-10">
-                        {[0, 30, 60, 90, 120].map(day => (
-                          <div key={day} className="absolute top-0 bottom-0 flex items-center justify-center text-xs text-gray-500" style={{ left: `${(day / 120) * 100}%` }}>
-                            <span className="font-medium">{day === 0 ? "Today" : `+${day}d`}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="w-24 flex-shrink-0 p-3 text-xs font-bold text-gray-700 text-right">Risk</div>
+                  {/* SECTION 1: Non-Recertifiable Lots */}
+                  <div className="border-b-2 border-gray-300">
+                    <div className="bg-gray-100 px-4 py-2 border-b border-gray-200">
+                      <span className="text-sm font-bold text-gray-700">Non-Recertifiable Parts</span>
+                      <span className="ml-2 text-xs text-gray-500">({nonRecertifiableLots.length} lots)</span>
                     </div>
-                    
-                    {/* Rows */}
-                    <div className="divide-y divide-gray-100">
-                      {timelineData.map(lot => {
-                        const maxDays = 120
-                        const expiryPct = Math.min(Math.max(lot.daysToEffectiveExpiry / maxDays * 100, 0), 100)
-                        
-                        return (
-                          <div
-                            key={lot.id}
-                            className="flex items-center cursor-pointer hover:bg-blue-50 transition-colors"
-                            onClick={() => handleLotClick(lot)}
-                          >
-                            <div className="w-48 flex-shrink-0 p-3">
-                              <p className="text-sm font-semibold text-gray-900 truncate">{lot.lotBatch}</p>
-                              <p className="text-xs text-gray-500 truncate">{lot.partNumber}</p>
+                    <div className="overflow-x-auto">
+                      {/* Header */}
+                      <div className="flex border-b border-gray-200 bg-gray-50">
+                        <div className="w-44 flex-shrink-0 p-2 text-xs font-bold text-gray-700">Lot / Part</div>
+                        <div className="w-20 flex-shrink-0 p-2 text-xs font-bold text-gray-700 text-center">Qty</div>
+                        <div className="flex-1 relative h-8">
+                          {[0, 30, 60, 90, 120].map(day => (
+                            <div key={day} className="absolute top-0 bottom-0 flex items-center justify-center text-xs text-gray-500" style={{ left: `${(day / 120) * 100}%` }}>
+                              <span className="font-medium">{day === 0 ? "Today" : `+${day}d`}</span>
                             </div>
-                            <div className="flex-1 relative h-14 py-2">
-                              {/* Life bar */}
-                              {lot.daysToEffectiveExpiry > 0 && (
+                          ))}
+                        </div>
+                        <div className="w-20 flex-shrink-0 p-2 text-xs font-bold text-gray-700 text-right">Risk</div>
+                      </div>
+                      
+                      {/* Rows */}
+                      <div className="divide-y divide-gray-100 max-h-[280px] overflow-y-auto">
+                        {nonRecertifiableLots.map(lot => {
+                          const maxDays = 120
+                          const expiryPct = Math.min(Math.max(lot.daysToEffectiveExpiry / maxDays * 100, 0), 100)
+                          
+                          return (
+                            <div
+                              key={lot.id}
+                              className="flex items-center cursor-pointer hover:bg-blue-50 transition-colors"
+                              onClick={() => handleLotClick(lot)}
+                            >
+                              <div className="w-44 flex-shrink-0 p-2">
+                                <p className="text-sm font-semibold text-gray-900 truncate">{lot.lotBatch}</p>
+                                <p className="text-xs text-gray-500 truncate">{lot.partNumber}</p>
+                              </div>
+                              <div className="w-20 flex-shrink-0 p-2 text-center">
                                 <UITooltip>
                                   <TooltipTrigger asChild>
-                                    <div 
-                                      className="absolute top-1/2 -translate-y-1/2 h-3 rounded bg-green-500 cursor-help"
-                                      style={{ left: "0%", width: `${expiryPct}%` }}
-                                    >
-                                      {/* Expiry marker */}
-                                      <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-gray-800 rounded" />
+                                    <div className={`text-xs font-bold ${lot.hasQtyShortfall ? "text-orange-600" : "text-gray-700"}`}>
+                                      {lot.quantity}
+                                      {lot.hasQtyShortfall && <span className="text-orange-500 ml-0.5">!</span>}
                                     </div>
                                   </TooltipTrigger>
                                   <TooltipContent side="top" className="bg-gray-900 text-white p-2 text-xs">
-                                    <p><strong>Effective Expiry:</strong> {lot.effectiveExpiryDate.toLocaleDateString()}</p>
-                                    <p><strong>Days remaining:</strong> {lot.daysToEffectiveExpiry}</p>
-                                    {lot.serviceExpiryDate && <p className="text-orange-300"><strong>Open/Thaw clock active</strong></p>}
+                                    <p><strong>Lot Qty:</strong> {lot.quantity} {lot.uom}</p>
+                                    <p><strong>Demand Qty:</strong> {lot.totalDemandQty} {lot.uom}</p>
+                                    {lot.hasQtyShortfall ? (
+                                      <p className="text-orange-300 font-bold">Shortfall: {lot.qtyShortfall} {lot.uom}</p>
+                                    ) : (
+                                      <p className="text-green-300">Sufficient qty</p>
+                                    )}
                                   </TooltipContent>
                                 </UITooltip>
-                              )}
-                              
-                              {lot.daysToEffectiveExpiry <= 0 && (
-                                <div className="absolute left-0 top-1/2 -translate-y-1/2 px-2 py-0.5 bg-gray-800 text-white text-xs font-bold rounded">
-                                  EXPIRED
-                                </div>
-                              )}
-                              
-                              {/* Demand markers */}
-                              {lot.linkedDemand.map((d, i) => {
-                                const daysToUse = Math.floor((d.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
-                                const usePct = Math.min(Math.max(daysToUse / maxDays * 100, 0), 100)
-                                const isAfterExpiry = daysToUse > lot.daysToEffectiveExpiry
-                                const delta = daysToUse - lot.daysToEffectiveExpiry
-                                
-                                return (
-                                  <UITooltip key={i}>
+                              </div>
+                              <div className="flex-1 relative h-12 py-1">
+                                {/* Life bar */}
+                                {lot.daysToEffectiveExpiry > 0 && (
+                                  <UITooltip>
                                     <TooltipTrigger asChild>
-                                      <div
-                                        className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full border-2 cursor-help ${
-                                          isAfterExpiry 
-                                            ? "bg-red-600 border-red-300 ring-2 ring-red-200" 
-                                            : "bg-blue-600 border-blue-300"
-                                        }`}
-                                        style={{ left: `${usePct}%` }}
-                                      />
+                                      <div 
+                                        className="absolute top-1/2 -translate-y-1/2 h-2.5 rounded bg-green-500 cursor-help"
+                                        style={{ left: "0%", width: `${expiryPct}%` }}
+                                      >
+                                        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-gray-800 rounded" />
+                                      </div>
                                     </TooltipTrigger>
-                                    <TooltipContent side="top" className={`p-2 text-xs ${isAfterExpiry ? "bg-red-900 text-white" : "bg-gray-900 text-white"}`}>
-                                      <p><strong>WO/CLIN:</strong> {d.woNumber} / {d.clin}</p>
-                                      <p><strong>Planned use:</strong> {d.plannedUseDate.toLocaleDateString()}</p>
+                                    <TooltipContent side="top" className="bg-gray-900 text-white p-2 text-xs">
                                       <p><strong>Effective Expiry:</strong> {lot.effectiveExpiryDate.toLocaleDateString()}</p>
-                                      <p><strong>Delta:</strong> {isAfterExpiry ? <span className="text-red-300 font-bold">+{delta}d (USE AFTER EXPIRY)</span> : <span className="text-green-300">{delta}d (usable)</span>}</p>
-                                      <p className="text-gray-400 mt-1 text-[10px]">Delta = planned_use_date - effective_expiry</p>
+                                      <p><strong>Days remaining:</strong> {lot.daysToEffectiveExpiry}</p>
+                                      <p className="text-gray-400 mt-1">Not eligible for recertification</p>
                                     </TooltipContent>
                                   </UITooltip>
-                                )
-                              })}
+                                )}
+                                
+                                {lot.daysToEffectiveExpiry <= 0 && (
+                                  <div className="absolute left-0 top-1/2 -translate-y-1/2 px-2 py-0.5 bg-gray-800 text-white text-[10px] font-bold rounded">
+                                    EXPIRED
+                                  </div>
+                                )}
+                                
+                                {/* Demand markers */}
+                                {lot.linkedDemand.map((d, i) => {
+                                  const daysToUse = Math.floor((d.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
+                                  const usePct = Math.min(Math.max(daysToUse / maxDays * 100, 0), 100)
+                                  const isAfterExpiry = daysToUse > lot.daysToEffectiveExpiry
+                                  const delta = daysToUse - lot.daysToEffectiveExpiry
+                                  // Check if this specific demand exceeds remaining qty (cumulative)
+                                  const priorDemandQty = lot.linkedDemand.slice(0, i).reduce((sum, dd) => sum + dd.qty, 0)
+                                  const qtyInsufficientForThis = (priorDemandQty + d.qty) > lot.quantity
+                                  
+                                  return (
+                                    <UITooltip key={i}>
+                                      <TooltipTrigger asChild>
+                                        <div
+                                          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full border-2 cursor-help ${
+                                            isAfterExpiry 
+                                              ? "bg-red-600 border-red-300 ring-2 ring-red-200" 
+                                              : qtyInsufficientForThis
+                                                ? "bg-blue-600 border-blue-300 ring-2 ring-orange-400"
+                                                : "bg-blue-600 border-blue-300"
+                                          }`}
+                                          style={{ left: `${usePct}%` }}
+                                        />
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" className={`p-2 text-xs ${isAfterExpiry ? "bg-red-900 text-white" : "bg-gray-900 text-white"}`}>
+                                        <p><strong>WO/CLIN:</strong> {d.woNumber} / {d.clin}</p>
+                                        <p><strong>Demand Qty:</strong> {d.qty} {lot.uom}</p>
+                                        <p><strong>Planned use:</strong> {d.plannedUseDate.toLocaleDateString()}</p>
+                                        {qtyInsufficientForThis && !isAfterExpiry && (
+                                          <p className="text-orange-300 font-bold mt-1">Qty insufficient for this demand</p>
+                                        )}
+                                        {isAfterExpiry && (
+                                          <p className="text-red-300 font-bold">+{delta}d past expiry</p>
+                                        )}
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )
+                                })}
+                              </div>
+                              <div className="w-20 flex-shrink-0 p-2 text-right">
+                                <Badge className={`text-[9px] ${
+                                  lot.riskType === "False coverage" ? "bg-red-100 text-red-800 border-red-300" :
+                                  lot.hasQtyShortfall ? "bg-orange-100 text-orange-800 border-orange-300" :
+                                  lot.riskType === "Near-expiry pegged" ? "bg-amber-100 text-amber-800 border-amber-300" :
+                                  "bg-green-100 text-green-800 border-green-300"
+                                }`}>
+                                  {lot.hasQtyShortfall && lot.riskType === "Healthy" ? "Qty short" : 
+                                   lot.riskType === "Healthy" ? "OK" : 
+                                   lot.riskType === "Near-expiry pegged" ? "Pegged risk" : 
+                                   lot.riskType.replace("Near-expiry ", "")}
+                                </Badge>
+                              </div>
                             </div>
-                            <div className="w-24 flex-shrink-0 p-3 text-right">
-                              <Badge className={`text-[10px] ${
-                                lot.riskType === "False coverage" ? "bg-red-100 text-red-800 border-red-300" :
-                                lot.riskType === "Near-expiry pegged" ? "bg-amber-100 text-amber-800 border-amber-300" :
-                                lot.riskType === "Near-expiry unpegged" ? "bg-yellow-100 text-yellow-800 border-yellow-300" :
-                                "bg-green-100 text-green-800 border-green-300"
-                              }`}>
-                                {lot.riskType === "Healthy" ? "OK" : lot.riskType === "Near-expiry pegged" ? "Pegged risk" : lot.riskType.replace("Near-expiry ", "")}
-                              </Badge>
+                          )
+                        })}
+                        {nonRecertifiableLots.length === 0 && (
+                          <div className="p-6 text-center text-gray-400 text-sm">No non-recertifiable lots in current filters</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* SECTION 2: Recertifiable Lots */}
+                  <div>
+                    <div className="bg-purple-50 px-4 py-2 border-b border-purple-200">
+                      <span className="text-sm font-bold text-purple-800">Recertifiable Parts</span>
+                      <span className="ml-2 text-xs text-purple-600">({recertifiableLots.length} lots)</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      {/* Header */}
+                      <div className="flex border-b border-gray-200 bg-purple-50/50">
+                        <div className="w-44 flex-shrink-0 p-2 text-xs font-bold text-gray-700">Lot / Part</div>
+                        <div className="w-20 flex-shrink-0 p-2 text-xs font-bold text-gray-700 text-center">Qty</div>
+                        <div className="flex-1 relative h-8">
+                          {[0, 30, 60, 90, 120, 150].map(day => (
+                            <div key={day} className="absolute top-0 bottom-0 flex items-center justify-center text-xs text-gray-500" style={{ left: `${(day / 150) * 100}%` }}>
+                              <span className="font-medium">{day === 0 ? "Today" : `+${day}d`}</span>
                             </div>
-                          </div>
-                        )
-                      })}
-                      {timelineData.length === 0 && (
-                        <div className="p-8 text-center text-gray-400">No pegged lots in current filters</div>
-                      )}
+                          ))}
+                        </div>
+                        <div className="w-24 flex-shrink-0 p-2 text-xs font-bold text-gray-700 text-center">Recert</div>
+                        <div className="w-20 flex-shrink-0 p-2 text-xs font-bold text-gray-700 text-right">Risk</div>
+                      </div>
+                      
+                      {/* Rows */}
+                      <div className="divide-y divide-gray-100 max-h-[280px] overflow-y-auto">
+                        {recertifiableLots.map(lot => {
+                          const maxDays = 150 // Extended to show post-recert life
+                          const expiryPct = Math.min(Math.max(lot.daysToEffectiveExpiry / maxDays * 100, 0), 100)
+                          const recertDeadlinePct = lot.recertDeadlineDays !== null 
+                            ? Math.min(Math.max(lot.recertDeadlineDays / maxDays * 100, 0), 100) 
+                            : null
+                          const extendedPct = showExtendedShelfLife && lot.extendedLifeDays > 0
+                            ? Math.min((lot.daysToEffectiveExpiry + lot.extendedLifeDays) / maxDays * 100, 100)
+                            : null
+                          
+                          return (
+                            <div
+                              key={lot.id}
+                              className="flex items-center cursor-pointer hover:bg-purple-50 transition-colors"
+                              onClick={() => handleLotClick(lot)}
+                            >
+                              <div className="w-44 flex-shrink-0 p-2">
+                                <p className="text-sm font-semibold text-gray-900 truncate">{lot.lotBatch}</p>
+                                <p className="text-xs text-gray-500 truncate">{lot.partNumber}</p>
+                              </div>
+                              <div className="w-20 flex-shrink-0 p-2 text-center">
+                                <UITooltip>
+                                  <TooltipTrigger asChild>
+                                    <div className={`text-xs font-bold ${lot.hasQtyShortfall ? "text-orange-600" : "text-gray-700"}`}>
+                                      {lot.quantity}
+                                      {lot.hasQtyShortfall && <span className="text-orange-500 ml-0.5">!</span>}
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" className="bg-gray-900 text-white p-2 text-xs">
+                                    <p><strong>Lot Qty:</strong> {lot.quantity} {lot.uom}</p>
+                                    <p><strong>Demand Qty:</strong> {lot.totalDemandQty} {lot.uom}</p>
+                                    {lot.hasQtyShortfall ? (
+                                      <p className="text-orange-300 font-bold">Shortfall: {lot.qtyShortfall} {lot.uom}</p>
+                                    ) : (
+                                      <p className="text-green-300">Sufficient qty</p>
+                                    )}
+                                  </TooltipContent>
+                                </UITooltip>
+                              </div>
+                              <div className="flex-1 relative h-12 py-1">
+                                {/* Extended life bar (dashed, behind main bar) */}
+                                {extendedPct !== null && lot.daysToEffectiveExpiry > 0 && (
+                                  <div 
+                                    className="absolute top-1/2 -translate-y-1/2 h-2.5 rounded bg-purple-200 border border-dashed border-purple-400"
+                                    style={{ left: `${expiryPct}%`, width: `${extendedPct - expiryPct}%` }}
+                                  />
+                                )}
+                                
+                                {/* Main life bar */}
+                                {lot.daysToEffectiveExpiry > 0 && (
+                                  <UITooltip>
+                                    <TooltipTrigger asChild>
+                                      <div 
+                                        className="absolute top-1/2 -translate-y-1/2 h-2.5 rounded bg-green-500 cursor-help"
+                                        style={{ left: "0%", width: `${expiryPct}%` }}
+                                      >
+                                        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-gray-800 rounded" />
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="bg-gray-900 text-white p-2 text-xs">
+                                      <p><strong>Effective Expiry:</strong> {lot.effectiveExpiryDate.toLocaleDateString()}</p>
+                                      <p><strong>Days remaining:</strong> {lot.daysToEffectiveExpiry}</p>
+                                      <p className="text-purple-300"><strong>Recert cycles left:</strong> {lot.recertCyclesRemaining}</p>
+                                      {lot.extendedLifeDays > 0 && (
+                                        <p className="text-purple-300"><strong>Potential extension:</strong> +{lot.extendedLifeDays}d</p>
+                                      )}
+                                    </TooltipContent>
+                                  </UITooltip>
+                                )}
+                                
+                                {/* Recert deadline marker */}
+                                {showRecertMarkers && recertDeadlinePct !== null && lot.daysToEffectiveExpiry > 0 && (
+                                  <UITooltip>
+                                    <TooltipTrigger asChild>
+                                      <div 
+                                        className="absolute top-1/2 -translate-y-1/2 w-0.5 h-6 border-l-2 border-dashed border-purple-600 cursor-help"
+                                        style={{ left: `${recertDeadlinePct}%` }}
+                                      />
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="bg-purple-900 text-white p-2 text-xs">
+                                      <p className="font-bold text-purple-200">Recert Deadline</p>
+                                      <p>Must start recert by day {lot.recertDeadlineDays}</p>
+                                      <p className="text-gray-300">Lab lead time: {lot.labLeadTimeDays}d</p>
+                                    </TooltipContent>
+                                  </UITooltip>
+                                )}
+                                
+                                {lot.daysToEffectiveExpiry <= 0 && (
+                                  <div className="absolute left-0 top-1/2 -translate-y-1/2 px-2 py-0.5 bg-gray-800 text-white text-[10px] font-bold rounded">
+                                    EXPIRED
+                                  </div>
+                                )}
+                                
+                                {/* Demand markers */}
+                                {lot.linkedDemand.map((d, i) => {
+                                  const daysToUse = Math.floor((d.plannedUseDate.getTime() - new Date().getTime()) / (24 * 60 * 60 * 1000))
+                                  const usePct = Math.min(Math.max(daysToUse / maxDays * 100, 0), 100)
+                                  const isAfterExpiry = daysToUse > lot.daysToEffectiveExpiry
+                                  const isWithinExtended = isAfterExpiry && daysToUse <= (lot.daysToEffectiveExpiry + lot.extendedLifeDays)
+                                  const delta = daysToUse - lot.daysToEffectiveExpiry
+                                  const priorDemandQty = lot.linkedDemand.slice(0, i).reduce((sum, dd) => sum + dd.qty, 0)
+                                  const qtyInsufficientForThis = (priorDemandQty + d.qty) > lot.quantity
+                                  
+                                  return (
+                                    <UITooltip key={i}>
+                                      <TooltipTrigger asChild>
+                                        <div
+                                          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full border-2 cursor-help ${
+                                            isAfterExpiry && !isWithinExtended
+                                              ? "bg-red-600 border-red-300 ring-2 ring-red-200" 
+                                              : isWithinExtended
+                                                ? "bg-purple-500 border-purple-300 ring-1 ring-purple-300"
+                                                : qtyInsufficientForThis
+                                                  ? "bg-blue-600 border-blue-300 ring-2 ring-orange-400"
+                                                  : "bg-blue-600 border-blue-300"
+                                          }`}
+                                          style={{ left: `${usePct}%` }}
+                                        />
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" className={`p-2 text-xs ${isAfterExpiry && !isWithinExtended ? "bg-red-900 text-white" : isWithinExtended ? "bg-purple-900 text-white" : "bg-gray-900 text-white"}`}>
+                                        <p><strong>WO/CLIN:</strong> {d.woNumber} / {d.clin}</p>
+                                        <p><strong>Demand Qty:</strong> {d.qty} {lot.uom}</p>
+                                        <p><strong>Planned use:</strong> {d.plannedUseDate.toLocaleDateString()}</p>
+                                        {isWithinExtended && (
+                                          <p className="text-purple-300 font-bold mt-1">Within extended life (requires recert)</p>
+                                        )}
+                                        {qtyInsufficientForThis && !isAfterExpiry && (
+                                          <p className="text-orange-300 font-bold mt-1">Qty insufficient for this demand</p>
+                                        )}
+                                        {isAfterExpiry && !isWithinExtended && (
+                                          <p className="text-red-300 font-bold">+{delta}d past max extended life</p>
+                                        )}
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )
+                                })}
+                              </div>
+                              <div className="w-24 flex-shrink-0 p-2 text-center">
+                                <div className="text-xs">
+                                  <span className="font-bold text-purple-700">{lot.recertCyclesRemaining}</span>
+                                  <span className="text-gray-500"> cycles</span>
+                                </div>
+                                {lot.recertDeadlineDays !== null && (
+                                  <div className={`text-[10px] ${lot.recertDeadlineDays <= 14 ? "text-red-600 font-bold" : "text-gray-500"}`}>
+                                    {lot.recertDeadlineDays <= 0 ? "Past deadline!" : `${lot.recertDeadlineDays}d to start`}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="w-20 flex-shrink-0 p-2 text-right">
+                                <Badge className={`text-[9px] ${
+                                  lot.riskType === "False coverage" ? "bg-red-100 text-red-800 border-red-300" :
+                                  lot.hasQtyShortfall ? "bg-orange-100 text-orange-800 border-orange-300" :
+                                  lot.riskType === "Near-expiry pegged" ? "bg-amber-100 text-amber-800 border-amber-300" :
+                                  "bg-green-100 text-green-800 border-green-300"
+                                }`}>
+                                  {lot.hasQtyShortfall && lot.riskType === "Healthy" ? "Qty short" : 
+                                   lot.riskType === "Healthy" ? "OK" : 
+                                   lot.riskType === "Near-expiry pegged" ? "Pegged risk" : 
+                                   lot.riskType.replace("Near-expiry ", "")}
+                                </Badge>
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {recertifiableLots.length === 0 && (
+                          <div className="p-6 text-center text-gray-400 text-sm">No recertifiable lots in current filters</div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </CardContent>
