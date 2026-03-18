@@ -727,6 +727,7 @@ export function ReadyToWork() {
   const [hoveredJob, setHoveredJob] = useState<string | null>(null)
   const [showIopMarker, setShowIopMarker] = useState(false)
   const [showPdmMarker, setShowPdmMarker] = useState(false)
+  const [ganttViewMode, setGanttViewMode] = useState<"baseline" | "scenario">("baseline")
 
   // Capacity state
   const [capViewMode, setCapViewMode] = useState<"workflow" | "bottleneck">("workflow")
@@ -1022,12 +1023,88 @@ export function ReadyToWork() {
 
           {/* RELEASE TIMELINE GANTT */}
           {(() => {
-            // Sort by baseline required date (earliest first)
-            const ganttJobs = [...filteredJobs].sort((a, b) => {
+            // Sort by baseline required date (earliest first) - DEFAULT VIEW
+            const baselineSortedJobs = [...filteredJobs].sort((a, b) => {
               const aReq = new Date(getBaselineDate(a, demandBaseline)).getTime()
               const bReq = new Date(getBaselineDate(b, demandBaseline)).getTime()
               return aReq - bReq
             })
+            
+            // SCENARIO ANALYSIS VIEW - Optimized reordering to maximize on-time completion
+            // Priority: 
+            // 1. Jobs that can be pulled forward to meet baseline (positive buffer potential)
+            // 2. Jobs already on-time with highest priority
+            // 3. Jobs with small delays that can be recovered
+            // 4. Jobs that are severely blocked (de-prioritized to end)
+            const scenarioSortedJobs = [...filteredJobs].sort((a, b) => {
+              const aReq = new Date(getBaselineDate(a, demandBaseline))
+              const bReq = new Date(getBaselineDate(b, demandBaseline))
+              const aClear = new Date(a.earliestFeasibleClear)
+              const bClear = new Date(b.earliestFeasibleClear)
+              const aBuffer = bufferDays(getBaselineDate(a, demandBaseline), a.earliestFeasibleClear)
+              const bBuffer = bufferDays(getBaselineDate(b, demandBaseline), b.earliestFeasibleClear)
+              
+              // Count failing gates
+              const aFailCount = Object.values(a.gateStatus).filter(g => g.status === "Fail").length
+              const bFailCount = Object.values(b.gateStatus).filter(g => g.status === "Fail").length
+              
+              // Severely blocked jobs (3+ gates failing) go to the end
+              const aSeverelyBlocked = aFailCount >= 3 || a.readinessStatus === "Blocked"
+              const bSeverelyBlocked = bFailCount >= 3 || b.readinessStatus === "Blocked"
+              if (aSeverelyBlocked && !bSeverelyBlocked) return 1
+              if (!aSeverelyBlocked && bSeverelyBlocked) return -1
+              
+              // Calculate "pull potential" - jobs with delays but early clear dates can be pulled forward
+              const aPullPotential = aBuffer < 0 && aClear.getTime() < aReq.getTime() + 7 * 86400000 ? Math.abs(aBuffer) : 0
+              const bPullPotential = bBuffer < 0 && bClear.getTime() < bReq.getTime() + 7 * 86400000 ? Math.abs(bBuffer) : 0
+              
+              // Jobs with pull potential (small delays that can be recovered by pulling forward) come first
+              if (aPullPotential > 0 && bPullPotential === 0) return -1
+              if (bPullPotential > 0 && aPullPotential === 0) return 1
+              
+              // Within pull candidates, sort by earliest feasible clear
+              if (aPullPotential > 0 && bPullPotential > 0) {
+                return aClear.getTime() - bClear.getTime()
+              }
+              
+              // On-time jobs sorted by priority then buffer
+              if (aBuffer >= 0 && bBuffer >= 0) {
+                if (a.businessPriority !== b.businessPriority) return b.businessPriority - a.businessPriority
+                return aBuffer - bBuffer // smaller buffer = more urgent
+              }
+              
+              // On-time jobs before late jobs
+              if (aBuffer >= 0 && bBuffer < 0) return -1
+              if (bBuffer >= 0 && aBuffer < 0) return 1
+              
+              // Both late - less late ones first
+              return bBuffer - aBuffer
+            })
+            
+            // Compute recommendations for scenario view
+            const getScenarioRecommendation = (job: Job) => {
+              const buffer = bufferDays(getBaselineDate(job, demandBaseline), job.earliestFeasibleClear)
+              const failCount = Object.values(job.gateStatus).filter(g => g.status === "Fail").length
+              
+              if (failCount >= 3 || job.readinessStatus === "Blocked") {
+                return { action: "DEPRIORITIZE", color: "#dc2626", bgColor: "#fef2f2", desc: "Push back - blocked" }
+              }
+              if (buffer >= 0 && job.readinessScore >= 80) {
+                return { action: "RELEASE", color: "#15803d", bgColor: "#dcfce7", desc: "Release now" }
+              }
+              if (buffer < 0 && buffer >= -5 && job.readinessScore >= 60) {
+                return { action: "PULL FWD", color: "#2563eb", bgColor: "#dbeafe", desc: `Pull ${Math.abs(buffer)}d forward` }
+              }
+              if (buffer < 0 && buffer >= -7) {
+                return { action: "EXPEDITE", color: "#d97706", bgColor: "#fef3c7", desc: "Expedite gates" }
+              }
+              if (buffer < -7) {
+                return { action: "RESCHEDULE", color: "#7c3aed", bgColor: "#f3e8ff", desc: "Negotiate new date" }
+              }
+              return { action: "MONITOR", color: "#64748b", bgColor: "#f1f5f9", desc: "Watch status" }
+            }
+            
+            const ganttJobs = ganttViewMode === "baseline" ? baselineSortedJobs : scenarioSortedJobs
             // Parse "YYYY-MM-DD" as local date (day index from epoch)
             const parseDay = (s: string) => {
               const [y, m, d] = s.split("-").map(Number)
@@ -1089,9 +1166,38 @@ export function ReadyToWork() {
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-sm">Release Timeline Gantt</CardTitle>
-                      <p className="text-[10px] text-slate-500">Sorted by baseline required date. Solid bar = planned window. Striped extension = projected slip to earliest feasible clear. Diamond = baseline required date.</p>
+                      <p className="text-[10px] text-slate-500">
+                        {ganttViewMode === "baseline" 
+                          ? "Sorted by baseline required date. Solid bar = planned window. Striped extension = projected slip. Diamond = baseline date."
+                          : "Scenario Analysis: Re-prioritized to maximize on-time delivery. Pull forward recoverable jobs, deprioritize blocked ones."
+                        }
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
+                      {/* View Toggle */}
+                      <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5 mr-2">
+                        <button
+                          onClick={() => setGanttViewMode("baseline")}
+                          className={`px-2.5 py-1 text-[9px] font-semibold rounded-md transition-all ${
+                            ganttViewMode === "baseline" 
+                              ? "bg-white text-slate-800 shadow-sm" 
+                              : "text-slate-500 hover:text-slate-700"
+                          }`}
+                        >
+                          Baseline View
+                        </button>
+                        <button
+                          onClick={() => setGanttViewMode("scenario")}
+                          className={`px-2.5 py-1 text-[9px] font-semibold rounded-md transition-all ${
+                            ganttViewMode === "scenario" 
+                              ? "bg-blue-600 text-white shadow-sm" 
+                              : "text-slate-500 hover:text-slate-700"
+                          }`}
+                        >
+                          Scenario Analysis
+                        </button>
+                      </div>
+                      
                       <div className="flex items-center gap-2.5 text-[9px] mr-2">
                         <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm bg-green-100 border border-green-500" /> On-time</span>
                         <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm bg-amber-100 border border-amber-500" /> Near-Ready</span>
@@ -1214,6 +1320,56 @@ export function ReadyToWork() {
                           <rect x={140} y={y + 7} width={24} height={14} rx={3} fill={statusColor.bg} stroke={statusColor.stroke} strokeWidth={1} />
                           <text x={152} y={y + 17} fontSize={8} fontWeight={700} fill={statusColor.text} textAnchor="middle">{job.readinessScore}</text>
 
+                          {/* Scenario recommendation badge (only in scenario view) */}
+                          {ganttViewMode === "scenario" && (() => {
+                            const rec = getScenarioRecommendation(job)
+                            return (
+                              <g>
+                                <rect x={100} y={y + 22} width={65} height={12} rx={2} fill={rec.bgColor} stroke={rec.color} strokeWidth={0.75} />
+                                <text x={132} y={y + 30} fontSize={6} fontWeight={700} fill={rec.color} textAnchor="middle">{rec.action}</text>
+                              </g>
+                            )
+                          })()}
+
+                          {/* SCENARIO VIEW: Show recommended start adjustment (pull forward arrow) */}
+                          {ganttViewMode === "scenario" && isLate && buf >= -7 && job.readinessScore >= 50 && (() => {
+                            // Calculate recommended start position (pull forward by slip days)
+                            const pullDays = Math.min(Math.abs(buf), 5)
+                            const recStartDate = new Date(new Date(job.plannedStart).getTime() - pullDays * 86400000)
+                            const recStartStr = recStartDate.toISOString().slice(0, 10)
+                            const recStartX = toPx(recStartStr)
+                            
+                            return (
+                              <g>
+                                {/* Dashed line from recommended start to actual start */}
+                                <line 
+                                  x1={labelW + recStartX + 2} 
+                                  y1={y + 17} 
+                                  x2={labelW + barStartX - 2} 
+                                  y2={y + 17} 
+                                  stroke="#2563eb" 
+                                  strokeWidth={1.5} 
+                                  strokeDasharray="4 2"
+                                />
+                                {/* Arrow pointing right */}
+                                <polygon 
+                                  points={`${labelW + barStartX - 2},${y + 14} ${labelW + barStartX + 3},${y + 17} ${labelW + barStartX - 2},${y + 20}`} 
+                                  fill="#2563eb"
+                                />
+                                {/* Recommended start marker (blue diamond) */}
+                                <polygon 
+                                  points={`${labelW + recStartX},${y + 12} ${labelW + recStartX + 4},${y + 17} ${labelW + recStartX},${y + 22} ${labelW + recStartX - 4},${y + 17}`} 
+                                  fill="#2563eb" 
+                                  opacity={0.8}
+                                />
+                                {/* "PULL" label */}
+                                <text x={labelW + recStartX} y={y + 6} fontSize={6} fontWeight={700} fill="#2563eb" textAnchor="middle">
+                                  PULL {pullDays}d
+                                </text>
+                              </g>
+                            )
+                          })()}
+
                           {/* SOLID bar: planned start up to contract date (or end of bar if before contract) */}
                           <rect x={labelW + barStartX} y={y + 8} width={solidW} height={18} rx={3}
                             fill={statusColor.bg} stroke={statusColor.stroke} strokeWidth={1.5}
@@ -1299,7 +1455,7 @@ export function ReadyToWork() {
                           {/* Tooltip on hover */}
                           {isHovered && (
                             <g>
-                              <rect x={Math.min(rightEdge + 50, totalW - 235)} y={y - 10} width={230} height={62} rx={4} fill="white" stroke="#cbd5e1" strokeWidth={1} filter="url(#ganttShadow)" />
+                              <rect x={Math.min(rightEdge + 50, totalW - 235)} y={y - 10} width={230} height={ganttViewMode === "scenario" ? 72 : 62} rx={4} fill="white" stroke="#cbd5e1" strokeWidth={1} filter="url(#ganttShadow)" />
                               <text x={Math.min(rightEdge + 56, totalW - 229)} y={y + 2} fontSize={8} fontWeight={700} fill="#1e293b">{job.id} | {job.program} | {job.clin}</text>
                               <text x={Math.min(rightEdge + 56, totalW - 229)} y={y + 12} fontSize={7} fill="#64748b">
                                 {`Score: ${job.readinessScore} | Pri: ${job.businessPriority} | Buffer: ${bufLabel}`}
@@ -1313,6 +1469,14 @@ export function ReadyToWork() {
                               <text x={Math.min(rightEdge + 56, totalW - 229)} y={y + 42} fontSize={7} fill={job.primaryBlocker !== "None" ? "#dc2626" : "#64748b"}>
                                 {job.primaryBlocker !== "None" ? `Blocker: ${job.primaryBlocker}` : `Next: ${job.nextAction.slice(0, 45)}`}
                               </text>
+                              {ganttViewMode === "scenario" && (() => {
+                                const rec = getScenarioRecommendation(job)
+                                return (
+                                  <text x={Math.min(rightEdge + 56, totalW - 229)} y={y + 52} fontSize={7} fontWeight={600} fill={rec.color}>
+                                    {`Recommendation: ${rec.action} - ${rec.desc}`}
+                                  </text>
+                                )
+                              })()}
                             </g>
                           )}
                         </g>
@@ -1327,14 +1491,61 @@ export function ReadyToWork() {
           {/* 3) THREE-LANE DECISION VIEW */}
           {(() => {
             const sorted = [...filteredJobs]
-            const laneA = sorted.filter(j => j.readinessStatus === "Ready" && j.businessPriority >= 70 && j.confidence === "High")
-            const laneB = sorted.filter(j => {
-              if (laneA.includes(j)) return false
+            
+            // BASELINE VIEW LANES (original logic)
+            const baselineLaneA = sorted.filter(j => j.readinessStatus === "Ready" && j.businessPriority >= 70 && j.confidence === "High")
+            const baselineLaneB = sorted.filter(j => {
+              if (baselineLaneA.includes(j)) return false
               const failCount = Object.values(j.gateStatus).filter(g => g.status === "Fail").length
               const buf = bufferDays(getBaselineDate(j, demandBaseline), j.earliestFeasibleClear)
               return (j.readinessStatus === "Watch" || j.readinessStatus === "Ready") && failCount <= 2 && buf >= -7
             })
-            const laneC = sorted.filter(j => !laneA.includes(j) && !laneB.includes(j))
+            const baselineLaneC = sorted.filter(j => !baselineLaneA.includes(j) && !baselineLaneB.includes(j))
+            
+            // SCENARIO VIEW LANES - Re-prioritized to maximize on-time delivery
+            // Lane A: PULL FORWARD - Jobs with slip that can still meet baseline if started earlier
+            const scenarioLaneA = sorted.filter(j => {
+              const buf = bufferDays(getBaselineDate(j, demandBaseline), j.earliestFeasibleClear)
+              const failCount = Object.values(j.gateStatus).filter(g => g.status === "Fail").length
+              // Jobs with small delays (1-5 days) that have high readiness and can be pulled forward
+              return buf < 0 && buf >= -5 && j.readinessScore >= 60 && failCount <= 1
+            }).sort((a, b) => {
+              // Sort by earliest feasible clear date (can complete soonest first)
+              return new Date(a.earliestFeasibleClear).getTime() - new Date(b.earliestFeasibleClear).getTime()
+            })
+            
+            // Lane B: RELEASE NOW - On-time jobs that can be pushed back slightly if needed
+            const scenarioLaneB = sorted.filter(j => {
+              if (scenarioLaneA.includes(j)) return false
+              const buf = bufferDays(getBaselineDate(j, demandBaseline), j.earliestFeasibleClear)
+              const failCount = Object.values(j.gateStatus).filter(g => g.status === "Fail").length
+              // On-time or slightly ahead jobs with good readiness
+              return buf >= 0 && j.readinessScore >= 70 && failCount === 0
+            }).sort((a, b) => {
+              // Sort by buffer (smallest buffer first - least slack)
+              const aBuf = bufferDays(getBaselineDate(a, demandBaseline), a.earliestFeasibleClear)
+              const bBuf = bufferDays(getBaselineDate(b, demandBaseline), b.earliestFeasibleClear)
+              return aBuf - bBuf
+            })
+            
+            // Lane C: DEPRIORITIZE - Blocked jobs that cannot meet baseline anyway
+            const scenarioLaneC = sorted.filter(j => {
+              if (scenarioLaneA.includes(j) || scenarioLaneB.includes(j)) return false
+              const buf = bufferDays(getBaselineDate(j, demandBaseline), j.earliestFeasibleClear)
+              const failCount = Object.values(j.gateStatus).filter(g => g.status === "Fail").length
+              // Severely blocked or significantly late
+              return failCount >= 2 || buf < -7 || j.readinessStatus === "Blocked"
+            })
+            
+            // Lane D (scenario only): MONITOR - Everything else
+            const scenarioLaneD = sorted.filter(j => 
+              !scenarioLaneA.includes(j) && !scenarioLaneB.includes(j) && !scenarioLaneC.includes(j)
+            )
+            
+            // Select lanes based on view mode
+            const laneA = ganttViewMode === "scenario" ? scenarioLaneA : baselineLaneA
+            const laneB = ganttViewMode === "scenario" ? scenarioLaneB : baselineLaneB
+            const laneC = ganttViewMode === "scenario" ? scenarioLaneC : baselineLaneC
 
             const blockerCounts = (jobs: Job[]) => {
               const counts: Record<string, number> = {}
@@ -1352,9 +1563,15 @@ export function ReadyToWork() {
                     <TableHead className="text-[9px] font-semibold text-slate-600">Job / WO</TableHead>
                     <TableHead className="text-[9px] font-semibold text-slate-600">CLIN</TableHead>
                     <TableHead className="text-[9px] font-semibold text-slate-600">Program / Project</TableHead>
+                    {ganttViewMode === "scenario" && (
+                      <TableHead className="text-[9px] font-semibold text-blue-600">Rec. Start</TableHead>
+                    )}
                     <TableHead className="text-[9px] font-semibold text-slate-600">Baseline Req</TableHead>
                     <TableHead className="text-[9px] font-semibold text-slate-600">Projected</TableHead>
                     <TableHead className="text-[9px] font-semibold text-slate-600 text-right">Buffer</TableHead>
+                    {ganttViewMode === "scenario" && (
+                      <TableHead className="text-[9px] font-semibold text-blue-600 text-center">Action</TableHead>
+                    )}
                     <TableHead className="text-[9px] font-semibold text-slate-600 text-right">Biz Pri</TableHead>
                     <TableHead className="text-[9px] font-semibold text-slate-600 text-right">Ready</TableHead>
                     <TableHead className="text-[9px] font-semibold text-slate-600">Conf</TableHead>
@@ -1379,9 +1596,44 @@ export function ReadyToWork() {
                             {job.dpas && <Badge className="text-[7px] bg-red-100 text-red-700 ml-1">{job.dpas}</Badge>}
                           </TableCell>
                           <TableCell className="text-[10px] text-slate-600">{job.program}<span className="text-slate-400 ml-1 text-[8px]">{job.project.split(" ").slice(1).join(" ")}</span></TableCell>
+                          {ganttViewMode === "scenario" && (() => {
+                            // Calculate recommended start date
+                            const pullDays = buf < 0 && buf >= -5 && job.readinessScore >= 60 ? Math.min(Math.abs(buf), 5) : 0
+                            const recStart = pullDays > 0 
+                              ? new Date(new Date(job.plannedStart).getTime() - pullDays * 86400000).toISOString().slice(0, 10)
+                              : job.plannedStart
+                            const isEarlier = pullDays > 0
+                            return (
+                              <TableCell className={`text-[10px] font-medium ${isEarlier ? "text-blue-600" : "text-slate-500"}`}>
+                                {recStart.replace("2026-", "")}
+                                {isEarlier && <span className="text-[8px] ml-0.5">(-{pullDays}d)</span>}
+                              </TableCell>
+                            )
+                          })()}
                           <TableCell className="text-[10px] text-slate-700">{baseDt.replace("2026-", "")}</TableCell>
                           <TableCell className="text-[10px] text-slate-700">{job.earliestFeasibleClear.replace("2026-", "")}</TableCell>
                           <TableCell className={`text-[10px] text-right font-bold ${buf < 0 ? "text-red-600" : buf <= 3 ? "text-amber-600" : "text-green-600"}`}>{buf > 0 ? `+${buf}d` : `${buf}d`}</TableCell>
+                          {ganttViewMode === "scenario" && (() => {
+                            const buffer = bufferDays(getBaselineDate(job, demandBaseline), job.earliestFeasibleClear)
+                            const failCount = Object.values(job.gateStatus).filter(g => g.status === "Fail").length
+                            let rec = { action: "MONITOR", color: "#64748b", bgColor: "#f1f5f9" }
+                            if (failCount >= 3 || job.readinessStatus === "Blocked") {
+                              rec = { action: "DEPRIORITIZE", color: "#dc2626", bgColor: "#fef2f2" }
+                            } else if (buffer >= 0 && job.readinessScore >= 80) {
+                              rec = { action: "RELEASE", color: "#15803d", bgColor: "#dcfce7" }
+                            } else if (buffer < 0 && buffer >= -5 && job.readinessScore >= 60) {
+                              rec = { action: "PULL FWD", color: "#2563eb", bgColor: "#dbeafe" }
+                            } else if (buffer < 0 && buffer >= -7) {
+                              rec = { action: "EXPEDITE", color: "#d97706", bgColor: "#fef3c7" }
+                            } else if (buffer < -7) {
+                              rec = { action: "RESCHEDULE", color: "#7c3aed", bgColor: "#f3e8ff" }
+                            }
+                            return (
+                              <TableCell className="text-center">
+                                <Badge className="text-[7px] font-bold" style={{ backgroundColor: rec.bgColor, color: rec.color, borderColor: rec.color }}>{rec.action}</Badge>
+                              </TableCell>
+                            )
+                          })()}
                           <TableCell className="text-[10px] text-right font-medium text-slate-900">{job.businessPriority}</TableCell>
                           <TableCell className="text-[10px] text-right font-medium text-slate-900">{job.readinessScore}</TableCell>
                           <TableCell><Badge className={`text-[8px] ${confColor(job.confidence)}`}>{job.confidence}</Badge></TableCell>
@@ -1398,7 +1650,7 @@ export function ReadyToWork() {
                         </TableRow>
                         {showDateStack && (
                           <TableRow className="bg-blue-50/30">
-                            <TableCell colSpan={14} className="py-1.5 px-4">
+                            <TableCell colSpan={ganttViewMode === "scenario" ? 16 : 14} className="py-1.5 px-4">
                               <div className="flex items-center gap-6 text-[9px]">
                                 <span className="text-slate-400 font-medium">Date Stack:</span>
                                 {[
@@ -1430,7 +1682,12 @@ export function ReadyToWork() {
               </Table>
             )
 
-            const lanes = [
+            const lanes = ganttViewMode === "scenario" ? [
+              { id: "A", label: "PULL FORWARD", desc: "Jobs with slip that can meet baseline if started earlier - prioritize these first", jobs: laneA, borderColor: "border-l-blue-500", bgHeader: "bg-blue-50" },
+              { id: "B", label: "ON-TIME (CAN DEFER)", desc: "Currently on-time jobs - can push back slightly to make room for pull-forward jobs", jobs: laneB, borderColor: "border-l-green-500", bgHeader: "bg-green-50" },
+              { id: "C", label: "DEPRIORITIZE", desc: "Blocked or severely late - will miss baseline anyway, defer to free capacity", jobs: laneC, borderColor: "border-l-red-500", bgHeader: "bg-red-50" },
+              ...(scenarioLaneD.length > 0 ? [{ id: "D", label: "MONITOR", desc: "Jobs requiring attention but not critical path", jobs: scenarioLaneD, borderColor: "border-l-slate-400", bgHeader: "bg-slate-50" }] : [])
+            ] : [
               { id: "A", label: "RELEASE NOW", desc: "High business priority + all gates passing + high confidence", jobs: laneA, borderColor: "border-l-green-500", bgHeader: "bg-green-50" },
               { id: "B", label: "NEXT UP (NEAR-READY)", desc: "1-2 gates failing, earliest clear date within horizon", jobs: laneB, borderColor: "border-l-amber-400", bgHeader: "bg-amber-50" },
               { id: "C", label: "INTERVENTION REQUIRED", desc: "Blocked items with high business impact or negative buffer", jobs: laneC, borderColor: "border-l-red-500", bgHeader: "bg-red-50" },
@@ -1439,6 +1696,41 @@ export function ReadyToWork() {
             let cumOffset = 0
             return (
               <div className="space-y-3">
+                {/* Scenario Analysis Summary Banner */}
+                {ganttViewMode === "scenario" && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <div className="flex items-start gap-3">
+                      <div className="bg-blue-100 rounded-full p-1.5">
+                        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      </div>
+                      <div className="flex-1">
+                        <h4 className="text-xs font-bold text-blue-900">Scenario Analysis: Maximize On-Time Delivery</h4>
+                        <p className="text-[10px] text-blue-700 mt-0.5">
+                          Jobs re-prioritized to complete more work before baseline dates. 
+                          <span className="font-semibold"> Pull Forward</span> jobs with small delays by starting earlier. 
+                          <span className="font-semibold"> Deprioritize</span> blocked jobs to free capacity. 
+                          <span className="font-semibold"> On-Time</span> jobs can be deferred slightly if needed.
+                        </p>
+                        <div className="flex items-center gap-4 mt-2 text-[9px]">
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                            <span className="text-blue-800 font-medium">Pull Forward: {scenarioLaneA.length} jobs</span>
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                            <span className="text-blue-800">Can Defer: {scenarioLaneB.length} jobs</span>
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                            <span className="text-blue-800">Deprioritize: {scenarioLaneC.length} jobs</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {lanes.map(lane => {
                   const offset = cumOffset
                   cumOffset += lane.jobs.length
