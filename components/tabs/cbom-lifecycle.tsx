@@ -8,11 +8,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, Treemap, Cell, ComposedChart, Area, ReferenceLine } from "recharts"
-import { ChevronRight, ChevronDown, Filter, Download, Share2, RefreshCw, AlertTriangle, CheckCircle, Clock, ArrowUpRight, ArrowDownRight, Minus, FileText, GitBranch, DollarSign, TrendingUp, Layers, History, Target } from "lucide-react"
+import { ChevronRight, ChevronDown, Filter, Download, Share2, RefreshCw, AlertTriangle, CheckCircle, Clock, ArrowUpRight, ArrowDownRight, Minus, FileText, GitBranch, DollarSign, TrendingUp, Layers, History, Target, Info, ArrowRight, Diff, Plus, Trash2 } from "lucide-react"
+import { Tooltip as UITooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 // ===== TYPES =====
 type BOMType = "Proposal" | "eBOM" | "mBOM" | "Current"
 type CompareMode = "baseline" | "prior-revision" | "prior-period" | "eac"
+type LifecycleComparePath = "proposal-ebom" | "ebom-mbom" | "mbom-current" | "proposal-current"
+
+// Lifecycle stage data
+interface LifecycleStage {
+  id: BOMType
+  label: string
+  fullLabel: string
+  effectiveDate: Date
+  revision: string
+  rolledUpCost: number
+  hasChanges: boolean
+}
 type DriverCategory = "Quantity" | "Substitution" | "Supplier Price" | "Make/Buy" | "Routing/Labor" | "Overhead" | "Scrap/Yield" | "Engineering" | "Manufacturing" | "Actuals"
 
 interface BOMNode {
@@ -41,7 +54,7 @@ interface BOMNode {
 
 interface ChangeEvent {
   id: string
-  eventType: "ECO" | "Substitution" | "Price Update" | "Quantity Change" | "Sourcing Change" | "Release"
+  eventType: "ECO" | "Substitution" | "Price Update" | "Quantity Change" | "Sourcing Change" | "Revision Release" | "Routing Update" | "Scrap Update"
   date: Date
   sourceBOM: BOMType
   targetBOM: BOMType
@@ -50,6 +63,16 @@ interface ChangeEvent {
   description: string
   approver: string
   status: "Approved" | "Pending" | "Effective"
+  // Extended fields for before/after mechanics
+  qtyBefore?: number
+  qtyAfter?: number
+  unitCostBefore?: number
+  unitCostAfter?: number
+  supplierBefore?: string
+  supplierAfter?: string
+  includedInCurrent: boolean
+  reflectedInEAC: "Yes" | "No" | "Partial"
+  lifecycleTransition: "within-ebom" | "ebom-to-mbom" | "mbom-to-current" | "proposal-assumptions"
 }
 
 interface CostDriver {
@@ -82,6 +105,40 @@ const COLORS = {
   blue: "#2563eb",
   purple: "#7c3aed",
   cyan: "#0891b2"
+}
+
+// KPI Definitions for tooltips
+const KPI_DEFINITIONS: Record<string, { title: string; description: string; factors?: string[] }> = {
+  "forecast-credibility": {
+    title: "Forecast Credibility Score",
+    description: "Measures alignment between costed BOM changes and current EAC forecast. A higher score indicates better forecast reliability.",
+    factors: [
+      "Incorporation rate: % of validated BOM cost changes in EAC (35%)",
+      "Forecast lag: Time from approved change to forecast update (20%)",
+      "Open change exposure: $ value of unincorporated changes (20%)",
+      "Revision stability: Consistency of revision-to-revision cost movement (25%)"
+    ]
+  },
+  "bom-eac-delta": {
+    title: "BOM vs EAC Delta",
+    description: "Difference between current rolled-up BOM cost and Estimate at Completion. Positive = BOM exceeds EAC; Negative = EAC exceeds BOM.",
+  },
+  "material-cost-change": {
+    title: "Material Cost Change",
+    description: "Percentage change in material cost component from Proposal Baseline to Current Released State.",
+  },
+  "open-ecos": {
+    title: "Open ECOs with Cost Impact",
+    description: "Count of Engineering Change Orders that have quantified cost impact but are not yet in 'Effective' status.",
+  },
+  "variance-baseline": {
+    title: "Variance vs Proposal Baseline",
+    description: "Total cost variance comparing Current Released Costed BOM to original Proposal Baseline Costed BOM.",
+  },
+  "unincorporated-changes": {
+    title: "Unincorporated Changes",
+    description: "Cost-impacting BOM changes that have been approved but not yet reflected in the current EAC forecast.",
+  }
 }
 
 // ===== SEEDED RANDOM =====
@@ -226,16 +283,21 @@ function generateBOMHierarchy(program: string): BOMNode[] {
 function generateChangeEvents(program: string): ChangeEvent[] {
   const seed = program.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
   const events: ChangeEvent[] = []
-  const eventTypes: ChangeEvent["eventType"][] = ["ECO", "Substitution", "Price Update", "Quantity Change", "Sourcing Change", "Release"]
+  const eventTypes: ChangeEvent["eventType"][] = ["ECO", "Substitution", "Price Update", "Quantity Change", "Sourcing Change", "Revision Release", "Routing Update", "Scrap Update"]
   const bomTypes: BOMType[] = ["Proposal", "eBOM", "mBOM", "Current"]
+  const lifecycleTransitions: ChangeEvent["lifecycleTransition"][] = ["within-ebom", "ebom-to-mbom", "mbom-to-current", "proposal-assumptions"]
   
   for (let i = 0; i < 20; i++) {
     const eSeed = seed + i * 77
     const sourceBOM = bomTypes[Math.floor(seededRandom(eSeed) * 3)]
     const targetIdx = Math.min(bomTypes.indexOf(sourceBOM) + 1, 3)
+    const qtyBefore = 1 + Math.floor(seededRandom(eSeed + 10) * 5)
+    const qtyAfter = qtyBefore + Math.floor(seededRandom(eSeed + 11) * 4) - 1
+    const unitCostBefore = 5000 + seededRandom(eSeed + 12) * 20000
+    const unitCostAfter = unitCostBefore * (0.85 + seededRandom(eSeed + 13) * 0.35)
     
     events.push({
-      id: `evt-${i}`,
+      id: `ECO-2024-${100 + i}`,
       eventType: eventTypes[Math.floor(seededRandom(eSeed + 1) * eventTypes.length)],
       date: new Date(Date.now() - (180 - i * 8) * 24 * 60 * 60 * 1000),
       sourceBOM,
@@ -243,17 +305,26 @@ function generateChangeEvents(program: string): ChangeEvent[] {
       affectedNodes: Array.from({ length: 1 + Math.floor(seededRandom(eSeed + 2) * 5) }, (_, j) => `asm-${j}`),
       costImpact: (seededRandom(eSeed + 3) - 0.4) * 500000,
       description: [
-        "Engineering redesign for weight reduction",
-        "Supplier price renegotiation",
-        "Quantity adjustment per customer change",
-        "Alternate source qualification",
-        "Manufacturing process improvement",
-        "Scrap rate update based on actuals",
-        "Material substitution for availability",
-        "Routing optimization"
+        "Engineering Change Order: Weight reduction redesign",
+        "Supplier price renegotiation effective Q2",
+        "Quantity adjustment per customer contract mod",
+        "Alternate source qualification complete",
+        "Manufacturing process improvement - routing",
+        "Scrap/yield rate update based on actuals",
+        "Material substitution for supply chain risk",
+        "Routing optimization - labor hours reduced"
       ][Math.floor(seededRandom(eSeed + 4) * 8)],
       approver: ["J. Smith", "M. Johnson", "R. Williams", "S. Davis"][Math.floor(seededRandom(eSeed + 5) * 4)],
-      status: ["Approved", "Pending", "Effective"][Math.floor(seededRandom(eSeed + 6) * 3)] as ChangeEvent["status"]
+      status: ["Approved", "Pending", "Effective"][Math.floor(seededRandom(eSeed + 6) * 3)] as ChangeEvent["status"],
+      qtyBefore,
+      qtyAfter,
+      unitCostBefore,
+      unitCostAfter,
+      supplierBefore: suppliers[Math.floor(seededRandom(eSeed + 14) * suppliers.length)],
+      supplierAfter: suppliers[Math.floor(seededRandom(eSeed + 15) * suppliers.length)],
+      includedInCurrent: seededRandom(eSeed + 16) > 0.3,
+      reflectedInEAC: ["Yes", "No", "Partial"][Math.floor(seededRandom(eSeed + 17) * 3)] as ChangeEvent["reflectedInEAC"],
+      lifecycleTransition: lifecycleTransitions[Math.floor(seededRandom(eSeed + 18) * lifecycleTransitions.length)]
     })
   }
   
@@ -315,21 +386,47 @@ function formatPercent(value: number): string {
 
 // ===== SUB-COMPONENTS =====
 
-// KPI Card
-function KPICard({ title, value, delta, deltaLabel, icon: Icon, trend }: {
+// KPI Card with optional definition tooltip
+function KPICard({ title, value, delta, deltaLabel, icon: Icon, trend, definitionKey }: {
   title: string
   value: string
   delta?: string
   deltaLabel?: string
   icon: React.ElementType
   trend?: "up" | "down" | "neutral"
+  definitionKey?: string
 }) {
+  const definition = definitionKey ? KPI_DEFINITIONS[definitionKey] : null
+  
   return (
     <Card className="border border-gray-200">
       <CardContent className="p-4">
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>
+            <div className="flex items-center gap-1">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>
+              {definition && (
+                <UITooltip>
+                  <TooltipTrigger asChild>
+                    <button className="p-0.5 hover:bg-gray-100 rounded">
+                      <Info className="w-3 h-3 text-gray-400" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs bg-gray-900 text-white p-3">
+                    <p className="font-semibold text-xs mb-1">{definition.title}</p>
+                    <p className="text-xs text-gray-300">{definition.description}</p>
+                    {definition.factors && (
+                      <div className="mt-2 space-y-1">
+                        <p className="text-[10px] text-gray-400 font-semibold">CALCULATION FACTORS:</p>
+                        {definition.factors.map((f, i) => (
+                          <p key={i} className="text-[10px] text-gray-300">• {f}</p>
+                        ))}
+                      </div>
+                    )}
+                  </TooltipContent>
+                </UITooltip>
+              )}
+            </div>
             <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
             {delta && (
               <div className="flex items-center gap-1 mt-1">
@@ -447,6 +544,9 @@ export function CBOMLifecycle() {
   const [selectedNode, setSelectedNode] = useState<BOMNode | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(["prog-1"]))
+  const [lifecycleComparePath, setLifecycleComparePath] = useState<LifecycleComparePath>("proposal-current")
+  const [selectedChangeEvent, setSelectedChangeEvent] = useState<ChangeEvent | null>(null)
+  const [changeCompareDrawerOpen, setChangeCompareDrawerOpen] = useState(false)
   
   // Data generation
   const bomNodes = useMemo(() => generateBOMHierarchy(selectedProgram), [selectedProgram])
@@ -456,6 +556,64 @@ export function CBOMLifecycle() {
   // Computed data
   const programNode = bomNodes.find(n => n.level === "program")!
   const assemblyNodes = bomNodes.filter(n => n.level === "assembly")
+  
+  // Lifecycle stages for the ribbon
+  const lifecycleStages: LifecycleStage[] = useMemo(() => {
+    const seed = selectedProgram.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
+    const proposalCost = programNode.rolledUpCostBaseline * 0.95
+    const eBOMCost = programNode.rolledUpCostBaseline * 0.98
+    const mBOMCost = programNode.rolledUpCostBaseline * 1.02
+    const currentCost = programNode.rolledUpCost
+    
+    return [
+      {
+        id: "Proposal" as BOMType,
+        label: "Proposal",
+        fullLabel: "Proposal Baseline Costed BOM",
+        effectiveDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+        revision: "Rev A",
+        rolledUpCost: proposalCost,
+        hasChanges: false
+      },
+      {
+        id: "eBOM" as BOMType,
+        label: "eBOM",
+        fullLabel: "Engineering BOM (eBOM)",
+        effectiveDate: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000),
+        revision: "Rev B",
+        rolledUpCost: eBOMCost,
+        hasChanges: true
+      },
+      {
+        id: "mBOM" as BOMType,
+        label: "mBOM",
+        fullLabel: "Manufacturing BOM (mBOM)",
+        effectiveDate: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
+        revision: "Rev B",
+        rolledUpCost: mBOMCost,
+        hasChanges: true
+      },
+      {
+        id: "Current" as BOMType,
+        label: "Current",
+        fullLabel: "Current Released Costed BOM",
+        effectiveDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        revision: "Rev C",
+        rolledUpCost: currentCost,
+        hasChanges: true
+      }
+    ]
+  }, [selectedProgram, programNode])
+  
+  // Get compare path labels
+  const getComparePathLabel = (path: LifecycleComparePath): { source: string; target: string } => {
+    switch (path) {
+      case "proposal-ebom": return { source: "Proposal Baseline", target: "Engineering BOM" }
+      case "ebom-mbom": return { source: "Engineering BOM", target: "Manufacturing BOM" }
+      case "mbom-current": return { source: "Manufacturing BOM", target: "Current Released" }
+      case "proposal-current": return { source: "Proposal Baseline", target: "Current Released" }
+    }
+  }
   
   const totalCost = programNode.rolledUpCost
   const baselineCost = programNode.rolledUpCostBaseline
@@ -598,8 +756,8 @@ export function CBOMLifecycle() {
         <div className="px-6 py-4">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h1 className="text-2xl font-bold text-gray-900">Costed BOM Cockpit</h1>
-              <p className="text-sm text-gray-500">Integrated BOM lifecycle with cost traceability and EAC alignment</p>
+              <h1 className="text-2xl font-bold text-gray-900">Costed BOM Lifecycle Cockpit</h1>
+              <p className="text-sm text-gray-500">Configuration-controlled BOM lifecycle with cost traceability and EAC alignment</p>
             </div>
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-400">Last refresh: {new Date().toLocaleTimeString()}</span>
@@ -622,20 +780,97 @@ export function CBOMLifecycle() {
               </SelectContent>
             </Select>
             <Select value={selectedBOMType} onValueChange={(v) => setSelectedBOMType(v as BOMType)}>
-              <SelectTrigger className="w-[140px] h-9"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {(["Proposal", "eBOM", "mBOM", "Current"] as BOMType[]).map(t => <SelectItem key={t} value={t}>{t} BOM</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={compareMode} onValueChange={(v) => setCompareMode(v as CompareMode)}>
               <SelectTrigger className="w-[180px] h-9"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="baseline">vs Proposal Baseline</SelectItem>
-                <SelectItem value="prior-revision">vs Prior Revision</SelectItem>
-                <SelectItem value="prior-period">vs Prior Period</SelectItem>
-                <SelectItem value="eac">vs EAC</SelectItem>
+                <SelectItem value="Proposal">Proposal Baseline BOM</SelectItem>
+                <SelectItem value="eBOM">Engineering BOM (eBOM)</SelectItem>
+                <SelectItem value="mBOM">Manufacturing BOM (mBOM)</SelectItem>
+                <SelectItem value="Current">Current Released BOM</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+        </div>
+        
+        {/* LIFECYCLE COMPARE RIBBON */}
+        <div className="px-6 py-3 bg-gradient-to-r from-slate-50 to-blue-50 border-t border-b border-gray-200">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">BOM Lifecycle Progression</span>
+            <span className="text-xs text-gray-500">Click stages or arrows to compare lifecycle transitions</span>
+          </div>
+          <div className="flex items-center justify-between">
+            {lifecycleStages.map((stage, index) => (
+              <div key={stage.id} className="flex items-center">
+                {/* Stage Box */}
+                <button
+                  onClick={() => setSelectedBOMType(stage.id)}
+                  className={`relative px-4 py-2 rounded-lg border-2 transition-all hover:shadow-md ${
+                    selectedBOMType === stage.id 
+                      ? "bg-blue-600 border-blue-600 text-white shadow-md" 
+                      : "bg-white border-gray-300 text-gray-700 hover:border-blue-400"
+                  }`}
+                >
+                  <p className="text-sm font-bold">{stage.label}</p>
+                  <p className={`text-[10px] ${selectedBOMType === stage.id ? "text-blue-100" : "text-gray-500"}`}>
+                    {stage.revision} • {stage.effectiveDate.toLocaleDateString("en-US", { month: "short", year: "2-digit" })}
+                  </p>
+                  <p className={`text-xs font-semibold mt-0.5 ${selectedBOMType === stage.id ? "text-white" : "text-gray-800"}`}>
+                    {formatCurrency(stage.rolledUpCost)}
+                  </p>
+                  {stage.hasChanges && index > 0 && (
+                    <div className={`absolute -top-1 -right-1 w-3 h-3 rounded-full ${selectedBOMType === stage.id ? "bg-amber-300" : "bg-amber-500"}`} />
+                  )}
+                </button>
+                
+                {/* Arrow/Compare Link */}
+                {index < lifecycleStages.length - 1 && (
+                  <button
+                    onClick={() => {
+                      const paths: LifecycleComparePath[] = ["proposal-ebom", "ebom-mbom", "mbom-current"]
+                      setLifecycleComparePath(paths[index])
+                    }}
+                    className={`mx-2 flex items-center gap-1 px-2 py-1 rounded transition-all ${
+                      (index === 0 && lifecycleComparePath === "proposal-ebom") ||
+                      (index === 1 && lifecycleComparePath === "ebom-mbom") ||
+                      (index === 2 && lifecycleComparePath === "mbom-current")
+                        ? "bg-blue-100 text-blue-700"
+                        : "hover:bg-gray-100 text-gray-400"
+                    }`}
+                  >
+                    <ArrowRight className="w-5 h-5" />
+                    <span className={`text-[10px] font-medium ${
+                      (lifecycleStages[index + 1].rolledUpCost - stage.rolledUpCost) > 0 ? "text-red-600" : "text-green-600"
+                    }`}>
+                      {formatCurrency(lifecycleStages[index + 1].rolledUpCost - stage.rolledUpCost)}
+                    </span>
+                  </button>
+                )}
+              </div>
+            ))}
+            
+            {/* Full Path Compare Button */}
+            <div className="ml-4 pl-4 border-l border-gray-300">
+              <button
+                onClick={() => setLifecycleComparePath("proposal-current")}
+                className={`px-3 py-2 rounded-lg border-2 text-xs font-semibold transition-all ${
+                  lifecycleComparePath === "proposal-current"
+                    ? "bg-purple-600 border-purple-600 text-white"
+                    : "bg-white border-purple-300 text-purple-700 hover:border-purple-500"
+                }`}
+              >
+                Full Path Compare
+                <p className={`text-[10px] font-normal ${lifecycleComparePath === "proposal-current" ? "text-purple-200" : "text-purple-500"}`}>
+                  Proposal → Current
+                </p>
+              </button>
+            </div>
+          </div>
+          
+          {/* Selected Compare Path Indicator */}
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-xs text-gray-500">Current comparison:</span>
+            <Badge className="bg-blue-100 text-blue-800 border-blue-300 text-xs">
+              {getComparePathLabel(lifecycleComparePath).source} → {getComparePathLabel(lifecycleComparePath).target}
+            </Badge>
           </div>
         </div>
         
@@ -646,8 +881,8 @@ export function CBOMLifecycle() {
               { id: "overview", label: "Program Cost Overview", icon: TrendingUp },
               { id: "explorer", label: "Costed BOM Explorer", icon: Layers },
               { id: "variance", label: "Cost Variance & Drivers", icon: GitBranch },
-              { id: "traceability", label: "Change Traceability", icon: History },
-              { id: "eac", label: "EAC / EV Alignment", icon: Target }
+              { id: "traceability", label: "BOM Cost Change Traceability", icon: History },
+              { id: "eac", label: "EAC / Forecast Alignment", icon: Target }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -671,13 +906,49 @@ export function CBOMLifecycle() {
         {/* TAB 1: Program Cost Overview */}
         {activeTab === "overview" && (
           <div className="space-y-6">
+            {/* Compare Path Banner */}
+            <div className="flex items-center gap-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg">
+              <Diff className="w-4 h-4 text-blue-600" />
+              <span className="text-sm font-medium text-blue-800">
+                Current comparison: {getComparePathLabel(lifecycleComparePath).source} → {getComparePathLabel(lifecycleComparePath).target}
+              </span>
+              <span className="text-xs text-blue-600">
+                (All cost deltas shown below reflect this lifecycle transition)
+              </span>
+            </div>
+            
             {/* KPI Cards */}
             <div className="grid grid-cols-5 gap-4">
               <KPICard title="Current Rolled-Up Cost" value={formatCurrency(totalCost)} icon={DollarSign} />
-              <KPICard title="Variance vs Baseline" value={formatCurrency(totalDelta)} delta={formatPercent(totalDeltaPercent)} trend={totalDelta > 0 ? "up" : "down"} icon={TrendingUp} />
-              <KPICard title="Material Cost Change" value={formatPercent(totalDeltaPercent * 0.7)} trend={totalDeltaPercent > 0 ? "up" : "down"} icon={Layers} />
-              <KPICard title="Open ECOs w/ Impact" value={changeEvents.filter(e => e.status !== "Effective").length.toString()} icon={FileText} />
-              <KPICard title="Forecast Credibility" value={`${eacData.credibilityScore}%`} delta={eacData.credibilityScore > 80 ? "Good" : "At Risk"} trend={eacData.credibilityScore > 80 ? "down" : "up"} icon={Target} />
+              <KPICard 
+                title="Variance vs Proposal Baseline" 
+                value={formatCurrency(totalDelta)} 
+                delta={formatPercent(totalDeltaPercent)} 
+                trend={totalDelta > 0 ? "up" : "down"} 
+                icon={TrendingUp}
+                definitionKey="variance-baseline"
+              />
+              <KPICard 
+                title="Material Cost Change" 
+                value={formatPercent(totalDeltaPercent * 0.7)} 
+                trend={totalDeltaPercent > 0 ? "up" : "down"} 
+                icon={Layers}
+                definitionKey="material-cost-change"
+              />
+              <KPICard 
+                title="Open ECOs with Cost Impact" 
+                value={changeEvents.filter(e => e.status !== "Effective").length.toString()} 
+                icon={FileText}
+                definitionKey="open-ecos"
+              />
+              <KPICard 
+                title="Forecast Credibility" 
+                value={`${eacData.credibilityScore}%`} 
+                delta={eacData.credibilityScore > 80 ? "Good" : "At Risk"} 
+                trend={eacData.credibilityScore > 80 ? "down" : "up"} 
+                icon={Target}
+                definitionKey="forecast-credibility"
+              />
             </div>
             
             {/* Main Visuals Row */}
@@ -685,7 +956,12 @@ export function CBOMLifecycle() {
               {/* Cost Roll-Up Waterfall - Custom SVG implementation */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Program Cost Roll-Up (Waterfall)</CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm font-bold text-gray-800">Program Cost Roll-Up (Waterfall)</CardTitle>
+                    <Badge className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200">
+                      {getComparePathLabel(lifecycleComparePath).source} → {getComparePathLabel(lifecycleComparePath).target}
+                    </Badge>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
                   <div className="h-[300px] relative">
@@ -796,7 +1072,7 @@ export function CBOMLifecycle() {
               {/* Cost Trend */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Cost Trend Over Time</CardTitle>
+                  <CardTitle className="text-sm font-bold text-gray-800">Rolled-Up Cost by Revision / Period</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
                   <div className="h-[300px]">
@@ -889,129 +1165,211 @@ export function CBOMLifecycle() {
         
         {/* TAB 2: Costed BOM Explorer */}
         {activeTab === "explorer" && (
-          <div className="grid grid-cols-3 gap-6">
-            {/* BOM Tree */}
-            <Card className="col-span-2 border border-gray-200">
-              <CardHeader className="py-3 px-4 border-b border-gray-100 flex flex-row items-center justify-between">
-                <CardTitle className="text-sm font-bold text-gray-800">BOM Hierarchy</CardTitle>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-[10px]">Current Cost</Badge>
-                  <Badge variant="outline" className="text-[10px] text-gray-400">Baseline</Badge>
-                  <Badge variant="outline" className="text-[10px] text-red-600">+Delta</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="max-h-[600px] overflow-auto">
-                  {bomNodes.filter(n => n.parentId === null).map(node => (
-                    <BOMTreeNode
-                      key={node.id}
-                      node={node}
-                      allNodes={bomNodes}
-                      level={0}
-                      expandedIds={expandedIds}
-                      onToggle={handleToggleExpand}
-                      onSelect={handleSelectNode}
-                      selectedId={selectedNode?.id || null}
-                    />
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+          <div className="space-y-4">
+            {/* Secondary Header - Compare Context */}
+            <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-slate-600" />
+                <span className="text-sm font-medium text-slate-700">
+                  Viewing structural and cost differences across:
+                </span>
+                <Badge className="bg-blue-100 text-blue-800 text-xs">
+                  {getComparePathLabel(lifecycleComparePath).source} → {getComparePathLabel(lifecycleComparePath).target}
+                </Badge>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="flex items-center gap-1 text-green-600"><Plus className="w-3 h-3" /> Added</span>
+                <span className="flex items-center gap-1 text-red-600"><Trash2 className="w-3 h-3" /> Removed</span>
+                <span className="flex items-center gap-1 text-amber-600"><Diff className="w-3 h-3" /> Changed</span>
+              </div>
+            </div>
             
-            {/* Selected Node Summary */}
-            <Card className="border border-gray-200">
-              <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">
-                  {selectedNode ? selectedNode.name : "Select a Node"}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4">
-                {selectedNode ? (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <p className="text-xs text-gray-500">Part Number</p>
-                        <p className="font-mono font-medium">{selectedNode.partNumber}</p>
+            <div className="grid grid-cols-3 gap-6">
+              {/* BOM Tree */}
+              <Card className="col-span-2 border border-gray-200">
+                <CardHeader className="py-3 px-4 border-b border-gray-100 flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-sm font-bold text-gray-800">Costed BOM Hierarchy</CardTitle>
+                    <Badge variant="outline" className="text-[9px] bg-gray-50">{selectedProgram}</Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px]">Current Cost</Badge>
+                    <Badge variant="outline" className="text-[10px] text-gray-400">Baseline</Badge>
+                    <Badge variant="outline" className="text-[10px] text-red-600">+Delta</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="max-h-[600px] overflow-auto">
+                    {bomNodes.filter(n => n.parentId === null).map(node => (
+                      <BOMTreeNode
+                        key={node.id}
+                        node={node}
+                        allNodes={bomNodes}
+                        level={0}
+                        expandedIds={expandedIds}
+                        onToggle={handleToggleExpand}
+                        onSelect={handleSelectNode}
+                        selectedId={selectedNode?.id || null}
+                      />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            
+            {/* Selected Node Summary with Before/After Mechanics */}
+              <Card className="border border-gray-200">
+                <CardHeader className="py-3 px-4 border-b border-gray-100">
+                  <CardTitle className="text-sm font-bold text-gray-800">
+                    {selectedNode ? selectedNode.name : "Select a BOM Item"}
+                  </CardTitle>
+                  {selectedNode && (
+                    <p className="text-xs text-gray-500 font-mono">{selectedNode.partNumber}</p>
+                  )}
+                </CardHeader>
+                <CardContent className="p-4">
+                  {selectedNode ? (
+                    <div className="space-y-4">
+                      {/* Breadcrumb */}
+                      <div className="text-[10px] text-gray-500 flex items-center gap-1">
+                        <span>Program</span>
+                        <ChevronRight className="w-3 h-3" />
+                        <span className="capitalize">{selectedNode.level === "program" ? selectedNode.name : "Major Assembly"}</span>
+                        {selectedNode.level !== "program" && selectedNode.level !== "assembly" && (
+                          <>
+                            <ChevronRight className="w-3 h-3" />
+                            <span className="capitalize">{selectedNode.level === "sub-assembly" ? "Sub-Assembly" : "Part"}</span>
+                          </>
+                        )}
                       </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Level</p>
-                        <p className="capitalize">{selectedNode.level}</p>
+                      
+                      {/* Change Badges */}
+                      <div className="flex flex-wrap gap-1">
+                        {selectedNode.quantity !== selectedNode.quantityBaseline && (
+                          <Badge className="text-[9px] bg-blue-100 text-blue-700">Qty Changed</Badge>
+                        )}
+                        {selectedNode.unitCost !== selectedNode.unitCostBaseline && (
+                          <Badge className="text-[9px] bg-amber-100 text-amber-700">Unit Cost Changed</Badge>
+                        )}
+                        {selectedNode.changeType === "substitution" && (
+                          <Badge className="text-[9px] bg-purple-100 text-purple-700">Substituted</Badge>
+                        )}
+                        {selectedNode.changeType === "supplier" && (
+                          <Badge className="text-[9px] bg-orange-100 text-orange-700">Supplier Changed</Badge>
+                        )}
+                        {selectedNode.changeType === "new" && (
+                          <Badge className="text-[9px] bg-green-100 text-green-700">Added</Badge>
+                        )}
+                        {selectedNode.changeType === "deleted" && (
+                          <Badge className="text-[9px] bg-red-100 text-red-700">Removed</Badge>
+                        )}
                       </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Current Cost</p>
-                        <p className="font-semibold text-gray-900">{formatCurrency(selectedNode.rolledUpCost)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Baseline Cost</p>
-                        <p className="text-gray-600">{formatCurrency(selectedNode.rolledUpCostBaseline)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Delta</p>
-                        <p className={`font-medium ${selectedNode.rolledUpCost - selectedNode.rolledUpCostBaseline > 0 ? "text-red-600" : "text-green-600"}`}>
-                          {formatCurrency(selectedNode.rolledUpCost - selectedNode.rolledUpCostBaseline)}
+                      
+                      {/* Before / After Mechanics Section */}
+                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                        <p className="text-xs font-bold text-slate-700 mb-3 flex items-center gap-1">
+                          <Diff className="w-3 h-3" /> Before / After Mechanics
                         </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Delta %</p>
-                        <p className={`font-medium ${selectedNode.rolledUpCost - selectedNode.rolledUpCostBaseline > 0 ? "text-red-600" : "text-green-600"}`}>
-                          {formatPercent(((selectedNode.rolledUpCost - selectedNode.rolledUpCostBaseline) / selectedNode.rolledUpCostBaseline) * 100)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Quantity</p>
-                        <p>{selectedNode.quantity} {selectedNode.quantity !== selectedNode.quantityBaseline && <span className="text-orange-600">(was {selectedNode.quantityBaseline})</span>}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Make/Buy</p>
-                        <Badge variant="outline" className="text-[10px]">{selectedNode.makeOrBuy}</Badge>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Supplier</p>
-                        <p>{selectedNode.supplier}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Commodity</p>
-                        <p>{selectedNode.commodity}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">BOM Source</p>
-                        <Badge className="text-[10px] bg-blue-100 text-blue-700">{selectedNode.bomSource}</Badge>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Last Changed</p>
-                        <p>{selectedNode.lastChangedDate.toLocaleDateString()}</p>
-                      </div>
-                    </div>
-                    
-                    {/* Mini cost composition chart */}
-                    <div className="pt-4 border-t border-gray-200">
-                      <p className="text-xs font-semibold text-gray-700 mb-2">Cost Composition</p>
-                      <div className="space-y-2">
-                        {[
-                          { label: "Material", pct: 60, color: "bg-blue-500" },
-                          { label: "Labor/Routing", pct: 25, color: "bg-purple-500" },
-                          { label: "Overhead", pct: 10, color: "bg-gray-400" },
-                          { label: "Other", pct: 5, color: "bg-gray-300" }
-                        ].map(item => (
-                          <div key={item.label} className="flex items-center gap-2">
-                            <span className="text-xs text-gray-500 w-20">{item.label}</span>
-                            <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                              <div className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }} />
-                            </div>
-                            <span className="text-xs text-gray-600 w-8">{item.pct}%</span>
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-3 gap-2 text-[10px]">
+                            <div className="font-semibold text-gray-600">Attribute</div>
+                            <div className="font-semibold text-gray-600 text-center">Before</div>
+                            <div className="font-semibold text-gray-600 text-center">After</div>
                           </div>
-                        ))}
+                          <div className="grid grid-cols-3 gap-2 text-xs border-t border-slate-200 pt-2">
+                            <div className="text-gray-600">Quantity</div>
+                            <div className="text-center text-gray-500">{selectedNode.quantityBaseline}</div>
+                            <div className={`text-center font-medium ${selectedNode.quantity !== selectedNode.quantityBaseline ? "text-amber-600" : "text-gray-700"}`}>
+                              {selectedNode.quantity}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="text-gray-600">Unit Cost</div>
+                            <div className="text-center text-gray-500">{formatCurrency(selectedNode.unitCostBaseline)}</div>
+                            <div className={`text-center font-medium ${selectedNode.unitCost !== selectedNode.unitCostBaseline ? "text-amber-600" : "text-gray-700"}`}>
+                              {formatCurrency(selectedNode.unitCost)}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="text-gray-600">Extended Cost</div>
+                            <div className="text-center text-gray-500">{formatCurrency(selectedNode.extendedCostBaseline)}</div>
+                            <div className={`text-center font-medium ${selectedNode.extendedCost !== selectedNode.extendedCostBaseline ? "text-amber-600" : "text-gray-700"}`}>
+                              {formatCurrency(selectedNode.extendedCost)}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="text-gray-600">BOM State</div>
+                            <div className="text-center text-gray-500">Proposal</div>
+                            <div className="text-center font-medium text-gray-700">{selectedNode.bomSource}</div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="text-gray-600">Revision</div>
+                            <div className="text-center text-gray-500">Rev A</div>
+                            <div className="text-center font-medium text-gray-700">{selectedNode.revision}</div>
+                          </div>
+                        </div>
+                        
+                        {/* Delta Explanation */}
+                        <div className="mt-3 pt-3 border-t border-slate-200">
+                          <p className="text-[10px] font-semibold text-slate-600 mb-1">Cost Delta Explanation:</p>
+                          <p className="text-[10px] text-slate-700 leading-relaxed">
+                            {selectedNode.quantity !== selectedNode.quantityBaseline ? 
+                              `Cost change driven by quantity change from ${selectedNode.quantityBaseline} to ${selectedNode.quantity}` :
+                              selectedNode.unitCost !== selectedNode.unitCostBaseline ?
+                              `Cost change driven by unit price change from ${formatCurrency(selectedNode.unitCostBaseline)} to ${formatCurrency(selectedNode.unitCost)}` :
+                              "No significant cost drivers identified for this node."
+                            }
+                            {selectedNode.bomSource !== "Proposal" && ` during ${selectedNode.bomSource === "eBOM" ? "Proposal → eBOM" : selectedNode.bomSource === "mBOM" ? "eBOM → mBOM" : "mBOM → Current"} transition.`}
+                          </p>
+                        </div>
+                      </div>
+                      
+                      {/* Structure Diff Block */}
+                      <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <p className="text-xs font-bold text-gray-700 mb-2">Structure Diff</p>
+                        <div className="flex items-center gap-2 text-xs">
+                          {selectedNode.changeType === "none" ? (
+                            <span className="text-gray-500">No structure change - cost-only change</span>
+                          ) : selectedNode.changeType === "new" ? (
+                            <span className="text-green-600 flex items-center gap-1"><Plus className="w-3 h-3" /> Part added to structure</span>
+                          ) : selectedNode.changeType === "deleted" ? (
+                            <span className="text-red-600 flex items-center gap-1"><Trash2 className="w-3 h-3" /> Part removed from structure</span>
+                          ) : selectedNode.changeType === "substitution" ? (
+                            <span className="text-purple-600 flex items-center gap-1"><GitBranch className="w-3 h-3" /> Part substituted</span>
+                          ) : (
+                            <span className="text-amber-600 flex items-center gap-1"><Diff className="w-3 h-3" /> Attribute change only</span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* Node Attributes */}
+                      <div className="grid grid-cols-2 gap-3 text-sm pt-2 border-t border-gray-200">
+                        <div>
+                          <p className="text-xs text-gray-500">Supplier</p>
+                          <p className="text-sm">{selectedNode.supplier}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-500">Make/Buy</p>
+                          <Badge variant="outline" className="text-[10px]">{selectedNode.makeOrBuy}</Badge>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-500">Commodity</p>
+                          <p className="text-sm">{selectedNode.commodity}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-500">Effective Date</p>
+                          <p className="text-sm">{selectedNode.lastChangedDate.toLocaleDateString()}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-400">
-                    <Layers className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                    <p>Click a node in the BOM tree to view details</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                  ) : (
+                    <div className="text-center py-8 text-gray-400">
+                      <Layers className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                      <p>Click a node in the BOM hierarchy to view before/after mechanics</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </div>
         )}
         
@@ -1136,20 +1494,42 @@ export function CBOMLifecycle() {
           </div>
         )}
         
-        {/* TAB 4: Change Traceability */}
+        {/* TAB 4: BOM Cost Change Traceability */}
         {activeTab === "traceability" && (
           <div className="space-y-6">
+            {/* Lifecycle State Context */}
+            <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-slate-600" />
+                <span className="text-sm font-medium text-slate-700">
+                  BOM Cost Change Event History
+                </span>
+                <Badge className="bg-blue-100 text-blue-800 text-xs">
+                  Showing changes: {getComparePathLabel(lifecycleComparePath).source} → {getComparePathLabel(lifecycleComparePath).target}
+                </Badge>
+              </div>
+              <span className="text-xs text-gray-500">Click any row to view structural compare details</span>
+            </div>
+            
             {/* Timeline */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">BOM Change Timeline</CardTitle>
+                <CardTitle className="text-sm font-bold text-gray-800">BOM Cost Change Timeline</CardTitle>
               </CardHeader>
               <CardContent className="p-4">
                 <div className="relative">
                   <div className="absolute top-4 left-0 right-0 h-1 bg-gray-200" />
                   <div className="flex justify-between relative">
                     {changeEvents.slice(0, 8).map((event, i) => (
-                      <div key={event.id} className="flex flex-col items-center" style={{ width: "12%" }}>
+                      <div 
+                        key={event.id} 
+                        className="flex flex-col items-center cursor-pointer hover:opacity-80" 
+                        style={{ width: "12%" }}
+                        onClick={() => {
+                          setSelectedChangeEvent(event)
+                          setChangeCompareDrawerOpen(true)
+                        }}
+                      >
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center z-10 ${
                           event.status === "Effective" ? "bg-green-500" : event.status === "Approved" ? "bg-blue-500" : "bg-amber-500"
                         }`}>
@@ -1172,50 +1552,102 @@ export function CBOMLifecycle() {
               </CardContent>
             </Card>
             
-            {/* Change Events Table */}
+            {/* Change Events Table - Enhanced with before/after columns */}
             <Card className="border border-gray-200">
-              <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Change Event History</CardTitle>
+              <CardHeader className="py-3 px-4 border-b border-gray-100 flex flex-row items-center justify-between">
+                <CardTitle className="text-sm font-bold text-gray-800">BOM Cost Change Event History</CardTitle>
+                <div className="flex items-center gap-2">
+                  {/* Lifecycle state filter badges */}
+                  {["within-ebom", "ebom-to-mbom", "mbom-to-current", "proposal-assumptions"].map(transition => (
+                    <Badge 
+                      key={transition}
+                      variant="outline" 
+                      className={`text-[9px] cursor-pointer hover:bg-blue-50 ${
+                        transition === "within-ebom" ? "border-blue-300" :
+                        transition === "ebom-to-mbom" ? "border-purple-300" :
+                        transition === "mbom-to-current" ? "border-green-300" : "border-gray-300"
+                      }`}
+                    >
+                      {transition === "within-ebom" ? "Within eBOM" :
+                       transition === "ebom-to-mbom" ? "eBOM → mBOM" :
+                       transition === "mbom-to-current" ? "mBOM → Current" : "Proposal"}
+                    </Badge>
+                  ))}
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="max-h-[400px] overflow-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-gray-50 sticky top-0">
+                    <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr className="border-b border-gray-200">
-                        <th className="text-left p-3 font-semibold text-gray-700">Event ID</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Type</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Date</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Source</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Target</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Affected</th>
-                        <th className="text-right p-3 font-semibold text-gray-700">Cost Impact</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Description</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Status</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Approver</th>
+                        <th className="text-left p-2 font-semibold text-gray-700 text-xs">Event ID</th>
+                        <th className="text-left p-2 font-semibold text-gray-700 text-xs">Type</th>
+                        <th className="text-left p-2 font-semibold text-gray-700 text-xs">Lifecycle</th>
+                        <th className="text-center p-2 font-semibold text-gray-700 text-xs">Qty Before</th>
+                        <th className="text-center p-2 font-semibold text-gray-700 text-xs">Qty After</th>
+                        <th className="text-center p-2 font-semibold text-gray-700 text-xs">Unit Before</th>
+                        <th className="text-center p-2 font-semibold text-gray-700 text-xs">Unit After</th>
+                        <th className="text-right p-2 font-semibold text-gray-700 text-xs">Cost Impact</th>
+                        <th className="text-center p-2 font-semibold text-gray-700 text-xs">In Current?</th>
+                        <th className="text-center p-2 font-semibold text-gray-700 text-xs">In EAC?</th>
+                        <th className="text-left p-2 font-semibold text-gray-700 text-xs">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {changeEvents.map((event) => (
-                        <tr key={event.id} className="hover:bg-blue-50 cursor-pointer">
-                          <td className="p-3 font-mono text-blue-600">{event.id.toUpperCase()}</td>
-                          <td className="p-3">
-                            <Badge variant="outline" className="text-[10px]">{event.eventType}</Badge>
+                        <tr 
+                          key={event.id} 
+                          className="hover:bg-blue-50 cursor-pointer"
+                          onClick={() => {
+                            setSelectedChangeEvent(event)
+                            setChangeCompareDrawerOpen(true)
+                          }}
+                        >
+                          <td className="p-2 font-mono text-blue-600 text-xs">{event.id}</td>
+                          <td className="p-2">
+                            <Badge variant="outline" className="text-[9px]">{event.eventType}</Badge>
                           </td>
-                          <td className="p-3 text-gray-600">{event.date.toLocaleDateString()}</td>
-                          <td className="p-3"><Badge className="text-[10px] bg-gray-100 text-gray-700">{event.sourceBOM}</Badge></td>
-                          <td className="p-3"><Badge className="text-[10px] bg-blue-100 text-blue-700">{event.targetBOM}</Badge></td>
-                          <td className="p-3 text-gray-600">{event.affectedNodes.length} nodes</td>
-                          <td className={`p-3 text-right font-medium ${event.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
+                          <td className="p-2">
+                            <Badge className={`text-[9px] ${
+                              event.lifecycleTransition === "within-ebom" ? "bg-blue-100 text-blue-700" :
+                              event.lifecycleTransition === "ebom-to-mbom" ? "bg-purple-100 text-purple-700" :
+                              event.lifecycleTransition === "mbom-to-current" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-700"
+                            }`}>
+                              {event.lifecycleTransition === "within-ebom" ? "In eBOM" :
+                               event.lifecycleTransition === "ebom-to-mbom" ? "eBOM→mBOM" :
+                               event.lifecycleTransition === "mbom-to-current" ? "mBOM→Curr" : "Proposal"}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-center text-gray-500 text-xs">{event.qtyBefore}</td>
+                          <td className={`p-2 text-center text-xs ${event.qtyAfter !== event.qtyBefore ? "text-amber-600 font-medium" : "text-gray-700"}`}>
+                            {event.qtyAfter}
+                          </td>
+                          <td className="p-2 text-center text-gray-500 text-xs">{formatCurrency(event.unitCostBefore || 0)}</td>
+                          <td className={`p-2 text-center text-xs ${event.unitCostAfter !== event.unitCostBefore ? "text-amber-600 font-medium" : "text-gray-700"}`}>
+                            {formatCurrency(event.unitCostAfter || 0)}
+                          </td>
+                          <td className={`p-2 text-right font-medium text-xs ${event.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
                             {formatCurrency(event.costImpact)}
                           </td>
-                          <td className="p-3 text-gray-600 text-xs max-w-[200px] truncate">{event.description}</td>
-                          <td className="p-3">
-                            <Badge className={`text-[10px] ${
+                          <td className="p-2 text-center">
+                            <Badge className={`text-[9px] ${event.includedInCurrent ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                              {event.includedInCurrent ? "Yes" : "No"}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-center">
+                            <Badge className={`text-[9px] ${
+                              event.reflectedInEAC === "Yes" ? "bg-green-100 text-green-700" :
+                              event.reflectedInEAC === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                            }`}>
+                              {event.reflectedInEAC}
+                            </Badge>
+                          </td>
+                          <td className="p-2">
+                            <Badge className={`text-[9px] ${
                               event.status === "Effective" ? "bg-green-100 text-green-700" :
                               event.status === "Approved" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
                             }`}>{event.status}</Badge>
                           </td>
-                          <td className="p-3 text-gray-600">{event.approver}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1223,20 +1655,162 @@ export function CBOMLifecycle() {
                 </div>
               </CardContent>
             </Card>
+            
+            {/* Change Event Structural Compare Drawer */}
+            <Sheet open={changeCompareDrawerOpen} onOpenChange={setChangeCompareDrawerOpen}>
+              <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
+                {selectedChangeEvent && (
+                  <>
+                    <SheetHeader className="pb-4 border-b border-gray-200">
+                      <SheetTitle className="text-lg font-bold text-gray-900">Change Event Structural Compare</SheetTitle>
+                      <p className="text-sm text-gray-500 font-mono">{selectedChangeEvent.id}</p>
+                    </SheetHeader>
+                    
+                    <div className="mt-4 space-y-4">
+                      {/* Event Info */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <p className="text-xs text-gray-500">Event Type</p>
+                          <Badge className="text-xs mt-1">{selectedChangeEvent.eventType}</Badge>
+                        </div>
+                        <div className="p-3 bg-gray-50 rounded-lg">
+                          <p className="text-xs text-gray-500">Lifecycle Transition</p>
+                          <Badge className={`text-xs mt-1 ${
+                            selectedChangeEvent.lifecycleTransition === "within-ebom" ? "bg-blue-100 text-blue-700" :
+                            selectedChangeEvent.lifecycleTransition === "ebom-to-mbom" ? "bg-purple-100 text-purple-700" :
+                            selectedChangeEvent.lifecycleTransition === "mbom-to-current" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-700"
+                          }`}>
+                            {selectedChangeEvent.lifecycleTransition === "within-ebom" ? "Within eBOM" :
+                             selectedChangeEvent.lifecycleTransition === "ebom-to-mbom" ? "eBOM → mBOM" :
+                             selectedChangeEvent.lifecycleTransition === "mbom-to-current" ? "mBOM → Current" : "From Proposal"}
+                          </Badge>
+                        </div>
+                      </div>
+                      
+                      {/* Side-by-Side Compare */}
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Source State */}
+                        <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
+                          <p className="text-xs font-bold text-slate-600 mb-3">SOURCE STATE</p>
+                          <Badge className="mb-3 bg-gray-100 text-gray-700">{selectedChangeEvent.sourceBOM}</Badge>
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Quantity</span>
+                              <span className="font-medium">{selectedChangeEvent.qtyBefore}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Unit Cost</span>
+                              <span className="font-medium">{formatCurrency(selectedChangeEvent.unitCostBefore || 0)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Supplier</span>
+                              <span className="font-medium text-xs">{selectedChangeEvent.supplierBefore}</span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Target State */}
+                        <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                          <p className="text-xs font-bold text-blue-600 mb-3">TARGET STATE</p>
+                          <Badge className="mb-3 bg-blue-100 text-blue-700">{selectedChangeEvent.targetBOM}</Badge>
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Quantity</span>
+                              <span className={`font-medium ${selectedChangeEvent.qtyAfter !== selectedChangeEvent.qtyBefore ? "text-amber-600" : ""}`}>
+                                {selectedChangeEvent.qtyAfter}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Unit Cost</span>
+                              <span className={`font-medium ${selectedChangeEvent.unitCostAfter !== selectedChangeEvent.unitCostBefore ? "text-amber-600" : ""}`}>
+                                {formatCurrency(selectedChangeEvent.unitCostAfter || 0)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Supplier</span>
+                              <span className={`font-medium text-xs ${selectedChangeEvent.supplierAfter !== selectedChangeEvent.supplierBefore ? "text-amber-600" : ""}`}>
+                                {selectedChangeEvent.supplierAfter}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Change Summary */}
+                      <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+                        <p className="text-xs font-bold text-amber-700 mb-2">CHANGE SUMMARY</p>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-amber-800">Event Cost Impact</span>
+                            <span className={`font-bold ${selectedChangeEvent.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
+                              {formatCurrency(selectedChangeEvent.costImpact)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-amber-800">Included in Current Cost Roll-up?</span>
+                            <Badge className={`text-[10px] ${selectedChangeEvent.includedInCurrent ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                              {selectedChangeEvent.includedInCurrent ? "Yes" : "No"}
+                            </Badge>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-amber-800">Reflected in EAC Forecast?</span>
+                            <Badge className={`text-[10px] ${
+                              selectedChangeEvent.reflectedInEAC === "Yes" ? "bg-green-100 text-green-700" :
+                              selectedChangeEvent.reflectedInEAC === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                            }`}>
+                              {selectedChangeEvent.reflectedInEAC}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Description */}
+                      <div className="p-4 bg-gray-50 rounded-lg">
+                        <p className="text-xs font-bold text-gray-600 mb-2">DESCRIPTION</p>
+                        <p className="text-sm text-gray-700">{selectedChangeEvent.description}</p>
+                        <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
+                          <span>Approved by: {selectedChangeEvent.approver}</span>
+                          <span>Date: {selectedChangeEvent.date.toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </SheetContent>
+            </Sheet>
           </div>
         )}
         
-        {/* TAB 5: EAC / EV Alignment */}
+        {/* TAB 5: EAC / Forecast Alignment */}
         {activeTab === "eac" && (
           <div className="space-y-6">
             {/* KPI Cards */}
             <div className="grid grid-cols-6 gap-4">
-              <KPICard title="BOM Rolled-Up Cost" value={formatCurrency(eacData.bomCost)} icon={DollarSign} />
+              <KPICard title="Current Rolled-Up BOM Cost" value={formatCurrency(eacData.bomCost)} icon={DollarSign} />
               <KPICard title="Current EAC" value={formatCurrency(eacData.eac)} icon={Target} />
-              <KPICard title="BOM vs EAC Delta" value={formatCurrency(eacData.bomCost - eacData.eac)} trend={eacData.bomCost > eacData.eac ? "up" : "down"} icon={TrendingUp} />
+              <KPICard 
+                title="BOM vs EAC Delta" 
+                value={formatCurrency(eacData.bomCost - eacData.eac)} 
+                delta={eacData.bomCost > eacData.eac ? "BOM exceeds EAC" : "EAC exceeds BOM"}
+                trend={eacData.bomCost > eacData.eac ? "up" : "down"} 
+                icon={TrendingUp}
+                definitionKey="bom-eac-delta"
+              />
               <KPICard title="CPI" value={eacData.cpi.toFixed(2)} delta={eacData.cpi >= 1 ? "On Track" : "At Risk"} trend={eacData.cpi >= 1 ? "down" : "up"} icon={TrendingUp} />
-              <KPICard title="Unincorporated Changes" value={eacData.unincorporatedChanges.toString()} icon={AlertTriangle} />
-              <KPICard title="Forecast Credibility" value={`${eacData.credibilityScore}%`} delta={eacData.credibilityScore > 80 ? "Good" : "Review"} trend={eacData.credibilityScore > 80 ? "down" : "up"} icon={CheckCircle} />
+              <KPICard 
+                title="Unincorporated Changes" 
+                value={eacData.unincorporatedChanges.toString()} 
+                icon={AlertTriangle}
+                definitionKey="unincorporated-changes"
+              />
+              <KPICard 
+                title="Forecast Credibility" 
+                value={`${eacData.credibilityScore}%`} 
+                delta={eacData.credibilityScore > 80 ? "Good" : "Review"} 
+                trend={eacData.credibilityScore > 80 ? "down" : "up"} 
+                icon={CheckCircle}
+                definitionKey="forecast-credibility"
+              />
             </div>
             
             {/* Main Charts */}

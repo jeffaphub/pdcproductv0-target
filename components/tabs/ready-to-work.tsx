@@ -1369,46 +1369,6 @@ export function ReadyToWork() {
                               </g>
                             )
                           })()}
-                          
-                          {/* SCENARIO VIEW: Show jobs that can be pushed back (positive buffer, on-time jobs) */}
-                          {ganttViewMode === "scenario" && !isLate && buf >= 2 && job.readinessStatus === "On-Time" && (() => {
-                            // Calculate how much the job can be delayed while still meeting baseline
-                            const pushDays = Math.min(buf, 7) // Max 7 days push
-                            const pushEndDate = new Date(new Date(job.plannedStart).getTime() + pushDays * 86400000)
-                            const pushEndStr = pushEndDate.toISOString().slice(0, 10)
-                            const pushEndX = toPx(pushEndStr)
-                            
-                            return (
-                              <g>
-                                {/* Dashed line from actual start to potential delayed start */}
-                                <line 
-                                  x1={labelW + barStartX + solidW + 2} 
-                                  y1={y + 17} 
-                                  x2={labelW + pushEndX - 2} 
-                                  y2={y + 17} 
-                                  stroke="#15803d" 
-                                  strokeWidth={1.5} 
-                                  strokeDasharray="4 2"
-                                />
-                                {/* Arrow pointing right */}
-                                <polygon 
-                                  points={`${labelW + pushEndX - 6},${y + 14} ${labelW + pushEndX - 2},${y + 17} ${labelW + pushEndX - 6},${y + 20}`} 
-                                  fill="#15803d"
-                                />
-                                {/* Potential delayed end marker (green hollow diamond) */}
-                                <polygon 
-                                  points={`${labelW + pushEndX},${y + 12} ${labelW + pushEndX + 4},${y + 17} ${labelW + pushEndX},${y + 22} ${labelW + pushEndX - 4},${y + 17}`} 
-                                  fill="none" 
-                                  stroke="#15803d"
-                                  strokeWidth={1.5}
-                                />
-                                {/* "FLEX" label */}
-                                <text x={labelW + barStartX + solidW + (pushEndX - barStartX - solidW) / 2} y={y + 6} fontSize={6} fontWeight={700} fill="#15803d" textAnchor="middle">
-                                  FLEX +{pushDays}d
-                                </text>
-                              </g>
-                            )
-                          })()}
 
                           {/* SOLID bar: planned start up to contract date (or end of bar if before contract) */}
                           <rect x={labelW + barStartX} y={y + 8} width={solidW} height={18} rx={3}
