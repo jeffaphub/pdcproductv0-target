@@ -45,6 +45,9 @@ interface LateJob {
   workcenter: string
   testCell: string | null
   status: JobStatus
+  // Separate metrics for late vs forecast-late
+  daysLate: number // For Late: positive days missed. For Forecast-Late: use daysToLateRisk
+  daysToLateRisk: number // For Forecast-Late: days until predicted miss (positive = time remaining)
   daysLateContract: number
   daysLateIOP: number
   daysLateDeliveryPlan: number
@@ -62,7 +65,7 @@ interface LateJob {
   nextAction: string
   recoveryETA: Date
   lastUpdated: Date
-  // Priority decomposition
+  // Priority decomposition with explainability
   priorityFactors: {
     clinCriticality: number
     dpasVisibility: number
@@ -70,13 +73,38 @@ interface LateJob {
     criticalPathRole: number
     dueWindowUrgency: number
   }
-  // Linked data
+  priorityExplanation: string // "Why is this job ranked here?"
+  // Linked evidence with concrete object types
   linkedPO: string | null
+  poPromiseDate: Date | null
   linkedMRB: string | null
+  mrbStatus: string | null
   linkedNC: string | null
+  ncStatus: string | null
   linkedRI: string | null
+  riStatus: string | null
+  linkedRouting: string | null
+  routingStatus: string | null
+  linkedCapacity: string | null
+  capacityQueue: number | null
   materialStatus: string
   supplierPromiseDate: Date | null
+  supplierSlipDays: number | null
+  // Governance tracking
+  wasOnProtectList: boolean
+  daysVisibleBeforeLate: number | null
+  actionTaken: string | null
+  actionWorked: boolean | null
+}
+
+// Recovery confidence calculation factors
+interface RecoveryConfidenceFactors {
+  materialAvailability: "Available" | "Partial" | "Blocked"
+  supplierReliability: "High" | "Medium" | "Low"
+  capacityAvailable: boolean
+  timeRemaining: number // days
+  openActions: number
+  explanation: string
 }
 
 interface CLINImpact {
@@ -84,12 +112,30 @@ interface CLINImpact {
   clin: string
   customer: string
   requiredDate: Date
+  milestoneType: "Ship" | "Delivery" | "PDR" | "CDR" | "TRR" | "Contractual"
   linkedLateJobs: number
+  linkedForecastLateJobs: number
   highestPriority: number
+  highestPriorityTier: PriorityTier
   primaryBlocker: RootCause
   revenueAtRisk: number
   dpasFlag: boolean
   recoveryConfidence: "High" | "Medium" | "Low"
+  recoveryConfidenceFactors: RecoveryConfidenceFactors
+  daysToCommitment: number
+}
+
+// Closed-loop governance tracking
+interface GovernanceRecord {
+  jobId: string
+  program: string
+  wasOnProtectList: boolean
+  daysVisibleBeforeLate: number
+  actionTaken: string
+  actionWorked: boolean
+  rootCause: RootCause
+  impactSeverity: "Critical" | "High" | "Medium" | "Low"
+  lessonsLearned: string
 }
 
 // ===== CONSTANTS =====
@@ -145,6 +191,17 @@ function formatDate(date: Date): string {
 }
 
 // ===== DATA GENERATION =====
+function generatePriorityExplanation(job: Partial<LateJob>): string {
+  const reasons: string[] = []
+  if (job.dpasFlag) reasons.push("DPAS-rated contract")
+  if (job.criticalPath) reasons.push("on critical path")
+  if ((job.revenueImpact || 0) > 3000000) reasons.push(`high revenue impact (${formatCurrency(job.revenueImpact || 0)})`)
+  if ((job.fanOut || 0) > 5) reasons.push(`${job.fanOut} downstream assemblies dependent`)
+  if ((job.daysLate || 0) > 20) reasons.push("severely late")
+  if ((job.daysToLateRisk || 0) < 5 && job.status === "Forecast-Late") reasons.push("imminent miss risk")
+  return reasons.length > 0 ? `Prioritized due to: ${reasons.join(", ")}` : "Standard prioritization based on combined factors"
+}
+
 function generateLateJobs(): LateJob[] {
   const jobs: LateJob[] = []
   const rootCauses: RootCause[] = ["Supply Shortage", "Late PR/PO", "Supplier Slip", "MRB/RI Hold", "NC/Quality Hold", "Routing Readiness", "Work Instruction", "Tooling/Cert", "Capacity Constraint", "Test Cell Constraint", "Data/Planning"]
@@ -153,12 +210,17 @@ function generateLateJobs(): LateJob[] {
   for (let i = 0; i < 150; i++) {
     const seed = i * 7919
     const status: JobStatus = seededRandom(seed) > 0.4 ? "Late" : "Forecast-Late"
-    const daysLateContract = status === "Late" ? Math.floor(seededRandom(seed + 1) * 45) + 1 : -Math.floor(seededRandom(seed + 1) * 14) - 1
+    // Clear distinction: daysLate for Late jobs, daysToLateRisk for Forecast-Late jobs
+    const daysLate = status === "Late" ? Math.floor(seededRandom(seed + 1) * 45) + 1 : 0
+    const daysToLateRisk = status === "Forecast-Late" ? Math.floor(seededRandom(seed + 1) * 14) + 1 : 0
+    const daysLateContract = status === "Late" ? daysLate : -daysToLateRisk
     const priorityScore = Math.floor(seededRandom(seed + 2) * 100)
     const priorityTier: PriorityTier = priorityScore >= 85 ? "Critical" : priorityScore >= 65 ? "High" : priorityScore >= 40 ? "Medium" : "Low"
     const dpasFlag = seededRandom(seed + 3) > 0.7
     const criticalContract = dpasFlag || seededRandom(seed + 4) > 0.6
     const revenueImpact = (seededRandom(seed + 5) * 5 + 0.5) * 1000000
+    const criticalPath = seededRandom(seed + 23) > 0.6
+    const fanOut = Math.floor(seededRandom(seed + 24) * 8) + 1
     
     const primaryCause = rootCauses[Math.floor(seededRandom(seed + 6) * rootCauses.length)]
     let blockingFunction: BlockingFunction
@@ -173,6 +235,18 @@ function generateLateJobs(): LateJob[] {
     } else {
       blockingFunction = blockingFunctions[Math.floor(seededRandom(seed + 7) * blockingFunctions.length)]
     }
+    
+    const partialJob: Partial<LateJob> = {
+      status,
+      dpasFlag,
+      criticalPath,
+      revenueImpact,
+      fanOut,
+      daysLate,
+      daysToLateRisk
+    }
+    
+    const supplierSlipDays = ["Supply Shortage", "Supplier Slip"].includes(primaryCause) ? Math.floor(seededRandom(seed + 50) * 10) + 1 : null
     
     jobs.push({
       id: `WO-${2024}-${String(1000 + i).padStart(5, "0")}`,
@@ -192,19 +266,21 @@ function generateLateJobs(): LateJob[] {
       workcenter: workcenters[Math.floor(seededRandom(seed + 16) * workcenters.length)],
       testCell: testCells[Math.floor(seededRandom(seed + 17) * testCells.length)],
       status,
+      daysLate,
+      daysToLateRisk,
       daysLateContract,
       daysLateIOP: daysLateContract + Math.floor(seededRandom(seed + 18) * 5) - 2,
       daysLateDeliveryPlan: daysLateContract + Math.floor(seededRandom(seed + 19) * 7) - 3,
       daysLatePDM: daysLateContract + Math.floor(seededRandom(seed + 20) * 10) - 5,
-      requiredDate: new Date(Date.now() + (status === "Late" ? -daysLateContract : Math.abs(daysLateContract)) * 86400000),
+      requiredDate: new Date(Date.now() + (status === "Late" ? -daysLate : daysToLateRisk) * 86400000),
       predictedCompletion: new Date(Date.now() + Math.floor(seededRandom(seed + 21) * 30) * 86400000),
       primaryCause,
       blockingFunction,
       rootCauseDetail: generateRootCauseDetail(primaryCause, seed),
       revenueImpact,
       aopImpact: revenueImpact * (0.3 + seededRandom(seed + 22) * 0.2),
-      criticalPath: seededRandom(seed + 23) > 0.6,
-      fanOut: Math.floor(seededRandom(seed + 24) * 8) + 1,
+      criticalPath,
+      fanOut,
       owner: ["J. Smith", "M. Johnson", "R. Williams", "S. Davis", "A. Martinez", "K. Thompson"][Math.floor(seededRandom(seed + 25) * 6)],
       nextAction: generateNextAction(primaryCause, seed),
       recoveryETA: new Date(Date.now() + Math.floor(seededRandom(seed + 26) * 21 + 3) * 86400000),
@@ -213,15 +289,29 @@ function generateLateJobs(): LateJob[] {
         clinCriticality: Math.floor(seededRandom(seed + 28) * 30) + 10,
         dpasVisibility: dpasFlag ? 25 : Math.floor(seededRandom(seed + 29) * 10),
         revenueAOP: Math.floor(seededRandom(seed + 30) * 25) + 5,
-        criticalPathRole: seededRandom(seed + 23) > 0.6 ? 20 : Math.floor(seededRandom(seed + 31) * 10),
+        criticalPathRole: criticalPath ? 20 : Math.floor(seededRandom(seed + 31) * 10),
         dueWindowUrgency: Math.min(30, Math.max(5, 30 - Math.abs(daysLateContract)))
       },
+      priorityExplanation: generatePriorityExplanation(partialJob),
       linkedPO: seededRandom(seed + 32) > 0.3 ? `PO-${2024}-${Math.floor(seededRandom(seed + 33) * 9000) + 1000}` : null,
+      poPromiseDate: seededRandom(seed + 32) > 0.3 ? new Date(Date.now() + Math.floor(seededRandom(seed + 40) * 14) * 86400000) : null,
       linkedMRB: ["MRB/RI Hold", "NC/Quality Hold"].includes(primaryCause) ? `MRB-${Math.floor(seededRandom(seed + 34) * 500) + 100}` : null,
+      mrbStatus: ["MRB/RI Hold", "NC/Quality Hold"].includes(primaryCause) ? ["Awaiting Disposition", "In Review", "Pending Engineering"][Math.floor(seededRandom(seed + 41) * 3)] : null,
       linkedNC: primaryCause === "NC/Quality Hold" ? `NC-${Math.floor(seededRandom(seed + 35) * 300) + 100}` : null,
+      ncStatus: primaryCause === "NC/Quality Hold" ? ["Open", "Investigation", "Corrective Action"][Math.floor(seededRandom(seed + 42) * 3)] : null,
       linkedRI: primaryCause === "MRB/RI Hold" ? `RI-${Math.floor(seededRandom(seed + 36) * 200) + 50}` : null,
+      riStatus: primaryCause === "MRB/RI Hold" ? ["Queued", "In Progress", "Awaiting Approval"][Math.floor(seededRandom(seed + 43) * 3)] : null,
+      linkedRouting: ["Routing Readiness", "Work Instruction"].includes(primaryCause) ? `RTG-${Math.floor(seededRandom(seed + 44) * 100) + 1}` : null,
+      routingStatus: ["Routing Readiness", "Work Instruction"].includes(primaryCause) ? ["Not Released", "Pending Approval", "Engineering Hold"][Math.floor(seededRandom(seed + 45) * 3)] : null,
+      linkedCapacity: ["Capacity Constraint", "Test Cell Constraint"].includes(primaryCause) ? workcenters[Math.floor(seededRandom(seed + 46) * workcenters.length)] : null,
+      capacityQueue: ["Capacity Constraint", "Test Cell Constraint"].includes(primaryCause) ? Math.floor(seededRandom(seed + 47) * 8) + 1 : null,
       materialStatus: ["Available", "Partial", "Pending", "On Order", "In Transit"][Math.floor(seededRandom(seed + 37) * 5)],
-      supplierPromiseDate: seededRandom(seed + 38) > 0.4 ? new Date(Date.now() + Math.floor(seededRandom(seed + 39) * 14) * 86400000) : null
+      supplierPromiseDate: seededRandom(seed + 38) > 0.4 ? new Date(Date.now() + Math.floor(seededRandom(seed + 39) * 14) * 86400000) : null,
+      supplierSlipDays,
+      wasOnProtectList: seededRandom(seed + 48) > 0.3,
+      daysVisibleBeforeLate: status === "Late" && seededRandom(seed + 48) > 0.3 ? Math.floor(seededRandom(seed + 49) * 14) + 1 : null,
+      actionTaken: seededRandom(seed + 48) > 0.3 ? ["Expedited", "Escalated", "Alternate source", "Overtime scheduled"][Math.floor(seededRandom(seed + 51) * 4)] : null,
+      actionWorked: seededRandom(seed + 48) > 0.3 ? seededRandom(seed + 52) > 0.4 : null
     })
   }
   
@@ -264,34 +354,95 @@ function generateNextAction(cause: RootCause, seed: number): string {
 
 function generateCLINImpacts(jobs: LateJob[]): CLINImpact[] {
   const clinMap = new Map<string, CLINImpact>()
+  const milestoneTypes: CLINImpact["milestoneType"][] = ["Ship", "Delivery", "PDR", "CDR", "TRR", "Contractual"]
   
-  jobs.forEach(job => {
+  jobs.forEach((job, idx) => {
     const key = `${job.program}-${job.clin}`
     if (!clinMap.has(key)) {
+      const daysToCommitment = Math.floor(seededRandom(idx * 113) * 30) + 5
+      const materialBlocked = jobs.filter(j => j.clin === job.clin && j.materialStatus !== "Available").length
+      const hasSupplierIssues = jobs.some(j => j.clin === job.clin && j.supplierSlipDays && j.supplierSlipDays > 3)
+      const hasCapacityIssues = jobs.some(j => j.clin === job.clin && j.capacityQueue && j.capacityQueue > 4)
+      
+      const recoveryConfidenceFactors: RecoveryConfidenceFactors = {
+        materialAvailability: materialBlocked > 2 ? "Blocked" : materialBlocked > 0 ? "Partial" : "Available",
+        supplierReliability: hasSupplierIssues ? "Low" : seededRandom(idx * 127) > 0.5 ? "High" : "Medium",
+        capacityAvailable: !hasCapacityIssues,
+        timeRemaining: daysToCommitment,
+        openActions: Math.floor(seededRandom(idx * 131) * 5) + 1,
+        explanation: ""
+      }
+      
+      // Build explanation
+      const explanationParts: string[] = []
+      if (recoveryConfidenceFactors.materialAvailability === "Blocked") explanationParts.push("material blocked")
+      if (recoveryConfidenceFactors.supplierReliability === "Low") explanationParts.push("supplier reliability concerns")
+      if (!recoveryConfidenceFactors.capacityAvailable) explanationParts.push("capacity constrained")
+      if (daysToCommitment < 10) explanationParts.push("limited time remaining")
+      recoveryConfidenceFactors.explanation = explanationParts.length > 0 
+        ? `Confidence based on: ${explanationParts.join(", ")}`
+        : "No major blockers identified"
+      
       clinMap.set(key, {
         program: job.program,
         clin: job.clin,
         customer: job.customer,
         requiredDate: job.requiredDate,
+        milestoneType: milestoneTypes[Math.floor(seededRandom(idx * 97) * milestoneTypes.length)],
         linkedLateJobs: 0,
+        linkedForecastLateJobs: 0,
         highestPriority: 0,
+        highestPriorityTier: "Low",
         primaryBlocker: job.primaryCause,
         revenueAtRisk: 0,
         dpasFlag: job.dpasFlag,
-        recoveryConfidence: "Medium"
+        recoveryConfidence: "Medium",
+        recoveryConfidenceFactors,
+        daysToCommitment
       })
     }
     const impact = clinMap.get(key)!
-    impact.linkedLateJobs++
+    if (job.status === "Late") impact.linkedLateJobs++
+    else impact.linkedForecastLateJobs++
     impact.highestPriority = Math.max(impact.highestPriority, job.priorityScore)
+    impact.highestPriorityTier = impact.highestPriority >= 85 ? "Critical" : impact.highestPriority >= 65 ? "High" : impact.highestPriority >= 40 ? "Medium" : "Low"
     impact.revenueAtRisk += job.revenueImpact
     if (job.dpasFlag) impact.dpasFlag = true
-    if (impact.highestPriority >= 85) impact.recoveryConfidence = "Low"
-    else if (impact.highestPriority >= 65) impact.recoveryConfidence = "Medium"
+    if (impact.highestPriority >= 85 || impact.recoveryConfidenceFactors.materialAvailability === "Blocked") impact.recoveryConfidence = "Low"
+    else if (impact.highestPriority >= 65 || impact.recoveryConfidenceFactors.supplierReliability === "Low") impact.recoveryConfidence = "Medium"
     else impact.recoveryConfidence = "High"
   })
   
   return Array.from(clinMap.values()).sort((a, b) => b.highestPriority - a.highestPriority)
+}
+
+function generateGovernanceRecords(): GovernanceRecord[] {
+  const records: GovernanceRecord[] = []
+  const rootCauses: RootCause[] = ["Supply Shortage", "Late PR/PO", "Supplier Slip", "MRB/RI Hold", "NC/Quality Hold", "Routing Readiness", "Capacity Constraint"]
+  
+  for (let i = 0; i < 25; i++) {
+    const seed = i * 1733
+    const wasOnList = seededRandom(seed) > 0.25
+    const actionWorked = wasOnList && seededRandom(seed + 1) > 0.35
+    
+    records.push({
+      jobId: `WO-2024-${String(800 + i).padStart(5, "0")}`,
+      program: programs[Math.floor(seededRandom(seed + 2) * programs.length)],
+      wasOnProtectList: wasOnList,
+      daysVisibleBeforeLate: wasOnList ? Math.floor(seededRandom(seed + 3) * 14) + 1 : 0,
+      actionTaken: wasOnList ? ["Expedited", "Escalated", "Alternate source", "Overtime scheduled", "Engineering waiver"][Math.floor(seededRandom(seed + 4) * 5)] : "None - not visible",
+      actionWorked,
+      rootCause: rootCauses[Math.floor(seededRandom(seed + 5) * rootCauses.length)],
+      impactSeverity: ["Critical", "High", "Medium", "Low"][Math.floor(seededRandom(seed + 6) * 4)] as GovernanceRecord["impactSeverity"],
+      lessonsLearned: actionWorked 
+        ? "Early visibility enabled successful recovery"
+        : wasOnList 
+          ? "Action taken but insufficient time/resources to recover"
+          : "Job not visible on protect list - process gap identified"
+    })
+  }
+  
+  return records
 }
 
 // ===== COMPONENTS =====
@@ -407,21 +558,44 @@ export function LateJobTracking() {
   const [selectedJob, setSelectedJob] = useState<LateJob | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [workbenchRole, setWorkbenchRole] = useState<string>("production-control")
+  // Drill-down filters (from other tabs clicking into the main list)
+  const [drillDownCLIN, setDrillDownCLIN] = useState<string | null>(null)
+  const [drillDownRootCause, setDrillDownRootCause] = useState<RootCause | null>(null)
+  const [drillDownPriorityTier, setDrillDownPriorityTier] = useState<PriorityTier | null>(null)
   
   // Data
   const allJobs = useMemo(() => generateLateJobs(), [])
   const clinImpacts = useMemo(() => generateCLINImpacts(allJobs), [allJobs])
+  const governanceRecords = useMemo(() => generateGovernanceRecords(), [])
   
-  // Filtered jobs
+  // Clear drill-down filters when switching tabs (except to jobs tab)
+  const navigateToJobsWithFilter = (filter: { clin?: string; rootCause?: RootCause; priorityTier?: PriorityTier }) => {
+    setDrillDownCLIN(filter.clin || null)
+    setDrillDownRootCause(filter.rootCause || null)
+    setDrillDownPriorityTier(filter.priorityTier || null)
+    setActiveTab("jobs")
+  }
+  
+  const clearDrillDownFilters = () => {
+    setDrillDownCLIN(null)
+    setDrillDownRootCause(null)
+    setDrillDownPriorityTier(null)
+  }
+  
+  // Filtered jobs with drill-down support
   const filteredJobs = useMemo(() => {
     return allJobs.filter(job => {
       if (selectedSite !== "All" && job.site !== selectedSite) return false
       if (selectedProgram !== "All" && job.program !== selectedProgram) return false
       if (selectedStatus === "Late" && job.status !== "Late") return false
       if (selectedStatus === "Forecast-Late" && job.status !== "Forecast-Late") return false
+      // Drill-down filters
+      if (drillDownCLIN && job.clin !== drillDownCLIN) return false
+      if (drillDownRootCause && job.primaryCause !== drillDownRootCause) return false
+      if (drillDownPriorityTier && job.priorityTier !== drillDownPriorityTier) return false
       return true
     })
-  }, [allJobs, selectedSite, selectedProgram, selectedStatus])
+  }, [allJobs, selectedSite, selectedProgram, selectedStatus, drillDownCLIN, drillDownRootCause, drillDownPriorityTier])
   
   // Computed metrics
   const lateJobCount = filteredJobs.filter(j => j.status === "Late").length
@@ -497,6 +671,23 @@ export function LateJobTracking() {
       case "pdm-forecast": return job.daysLatePDM
       case "worst-case": return Math.max(job.daysLateContract, job.daysLateIOP, job.daysLateDeliveryPlan, job.daysLatePDM)
       default: return job.daysLateContract
+    }
+  }
+  
+  // Clearer display: "Days Late" vs "Days to Late Risk"
+  const formatDaysDisplay = (job: LateJob): { label: string; value: string; colorClass: string } => {
+    if (job.status === "Late") {
+      return {
+        label: "Days Late",
+        value: `+${job.daysLate}`,
+        colorClass: "text-red-600"
+      }
+    } else {
+      return {
+        label: "Days to Risk",
+        value: `${job.daysToLateRisk}d`,
+        colorClass: job.daysToLateRisk <= 3 ? "text-red-600" : job.daysToLateRisk <= 7 ? "text-amber-600" : "text-amber-500"
+      }
     }
   }
   
@@ -645,58 +836,113 @@ export function LateJobTracking() {
             </div>
             
             <div className="grid grid-cols-2 gap-6">
-              {/* Priority vs Lateness Matrix */}
+              {/* Priority vs Lateness Matrix - Separated by Status */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-bold text-gray-800">Priority vs Lateness Matrix</CardTitle>
-                    <div className="flex items-center gap-2">
+                    <div>
+                      <CardTitle className="text-sm font-bold text-gray-800">Priority vs Lateness Matrix</CardTitle>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Click any bubble to view in Prioritized List</p>
+                    </div>
+                    <div className="flex items-center gap-3">
                       <span className="flex items-center gap-1 text-[10px] text-gray-500">
-                        <span className="w-2 h-2 rounded-full bg-red-500" /> Late
+                        <span className="w-2 h-2 rounded-full bg-red-500" /> Late (Days Missed)
                       </span>
                       <span className="flex items-center gap-1 text-[10px] text-gray-500">
-                        <span className="w-2 h-2 rounded-full bg-amber-500" /> Forecast
+                        <span className="w-2 h-2 rounded-full bg-amber-500" /> Forecast (Days to Risk)
                       </span>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <ResponsiveContainer width="100%" height={280}>
-                    <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis type="number" dataKey="x" name="Days Late" tick={{ fontSize: 10 }} label={{ value: "Days Late / At Risk", position: "bottom", fontSize: 10 }} />
-                      <YAxis type="number" dataKey="y" name="Priority" tick={{ fontSize: 10 }} label={{ value: "Priority Score", angle: -90, position: "insideLeft", fontSize: 10 }} domain={[0, 100]} />
-                      <ZAxis type="number" dataKey="z" range={[40, 400]} />
-                      <RechartsTooltip
-                        content={({ active, payload }) => {
-                          if (active && payload && payload.length) {
-                            const data = payload[0].payload
-                            return (
-                              <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
-                                <p className="font-semibold">{data.name}</p>
-                                <p>Priority: {data.y}</p>
-                                <p>Days: {data.x}</p>
-                                <p>Cause: {data.cause}</p>
-                              </div>
-                            )
-                          }
-                          return null
-                        }}
-                      />
-                      {/* Quadrant lines */}
-                      <Scatter data={scatterData} shape="circle">
-                        {scatterData.map((entry, index) => (
-                          <Cell 
-                            key={`cell-${index}`} 
-                            fill={entry.status === "Late" ? COLORS.critical : COLORS.high}
-                            fillOpacity={entry.y >= 65 ? 0.9 : 0.5}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Late Jobs Quadrant */}
+                    <div>
+                      <p className="text-[10px] font-semibold text-red-700 mb-2 text-center">Already Late: Days Missed</p>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <ScatterChart margin={{ top: 5, right: 5, bottom: 15, left: 5 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis type="number" dataKey="x" tick={{ fontSize: 9 }} label={{ value: "Days Late", position: "bottom", fontSize: 9 }} />
+                          <YAxis type="number" dataKey="y" tick={{ fontSize: 9 }} domain={[0, 100]} />
+                          <ZAxis type="number" dataKey="z" range={[30, 300]} />
+                          <RechartsTooltip
+                            content={({ active, payload }) => {
+                              if (active && payload && payload.length) {
+                                const data = payload[0].payload
+                                return (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
+                                    <p className="font-semibold">{data.name}</p>
+                                    <p>Priority: {data.y}</p>
+                                    <p className="text-red-600 font-medium">+{data.x} days late</p>
+                                    <p>Cause: {data.cause}</p>
+                                    <p className="text-blue-600 text-[10px] mt-1">Click to filter list</p>
+                                  </div>
+                                )
+                              }
+                              return null
+                            }}
                           />
-                        ))}
-                      </Scatter>
-                    </ScatterChart>
-                  </ResponsiveContainer>
+                          <Scatter 
+                            data={scatterData.filter(d => d.status === "Late")} 
+                            shape="circle"
+                            onClick={(data) => {
+                              const job = filteredJobs.find(j => j.id === data.name)
+                              if (job) navigateToJobsWithFilter({ priorityTier: job.priorityTier })
+                            }}
+                            cursor="pointer"
+                          >
+                            {scatterData.filter(d => d.status === "Late").map((entry, index) => (
+                              <Cell key={`late-${index}`} fill={COLORS.critical} fillOpacity={entry.y >= 65 ? 0.9 : 0.5} />
+                            ))}
+                          </Scatter>
+                        </ScatterChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {/* Forecast-Late Jobs Quadrant */}
+                    <div>
+                      <p className="text-[10px] font-semibold text-amber-700 mb-2 text-center">Forecast-Late: Days to Predicted Miss</p>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <ScatterChart margin={{ top: 5, right: 5, bottom: 15, left: 5 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis type="number" dataKey="x" tick={{ fontSize: 9 }} label={{ value: "Days to Risk", position: "bottom", fontSize: 9 }} reversed />
+                          <YAxis type="number" dataKey="y" tick={{ fontSize: 9 }} domain={[0, 100]} />
+                          <ZAxis type="number" dataKey="z" range={[30, 300]} />
+                          <RechartsTooltip
+                            content={({ active, payload }) => {
+                              if (active && payload && payload.length) {
+                                const data = payload[0].payload
+                                return (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
+                                    <p className="font-semibold">{data.name}</p>
+                                    <p>Priority: {data.y}</p>
+                                    <p className="text-amber-600 font-medium">{data.x} days to predicted miss</p>
+                                    <p>Cause: {data.cause}</p>
+                                    <p className="text-blue-600 text-[10px] mt-1">Click to filter list</p>
+                                  </div>
+                                )
+                              }
+                              return null
+                            }}
+                          />
+                          <Scatter 
+                            data={scatterData.filter(d => d.status === "Forecast-Late").map(d => ({ ...d, x: Math.abs(d.x) }))} 
+                            shape="circle"
+                            onClick={(data) => {
+                              const job = filteredJobs.find(j => j.id === data.name)
+                              if (job) navigateToJobsWithFilter({ priorityTier: job.priorityTier })
+                            }}
+                            cursor="pointer"
+                          >
+                            {scatterData.filter(d => d.status === "Forecast-Late").map((entry, index) => (
+                              <Cell key={`forecast-${index}`} fill={COLORS.high} fillOpacity={entry.y >= 65 ? 0.9 : 0.5} />
+                            ))}
+                          </Scatter>
+                        </ScatterChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
                   <div className="mt-2 text-[10px] text-gray-500 text-center">
-                    Bubble size = Revenue/AOP impact • Upper-right quadrant = Critical fires
+                    Bubble size = Revenue/AOP impact | Left: already late | Right: trending toward miss (action window)
                   </div>
                 </CardContent>
               </Card>
@@ -750,8 +996,27 @@ export function LateJobTracking() {
                         <th className="text-left p-2 font-semibold text-gray-700">Program / CLIN</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Customer</th>
                         <th className="text-center p-2 font-semibold text-gray-700">Status</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Days Late</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">
+                          <Tooltip>
+                            <TooltipTrigger className="flex items-center gap-1">
+                              Days Late / Risk <Info className="w-3 h-3 text-gray-400" />
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs text-xs bg-gray-900 text-white p-2">
+                              <p><strong>Late:</strong> Days past required date (positive number)</p>
+                              <p><strong>Forecast-Late:</strong> Days until predicted miss (countdown)</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </th>
+                        <th className="text-center p-2 font-semibold text-gray-700">
+                          <Tooltip>
+                            <TooltipTrigger className="flex items-center gap-1">
+                              Priority <Info className="w-3 h-3 text-gray-400" />
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs text-xs bg-gray-900 text-white p-2">
+                              Hover over score to see "Why prioritized?" decomposition
+                            </TooltipContent>
+                          </Tooltip>
+                        </th>
                         <th className="text-left p-2 font-semibold text-gray-700">Primary Cause</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Blocking</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
@@ -759,37 +1024,85 @@ export function LateJobTracking() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {filteredJobs.slice(0, 15).map((job) => (
-                        <tr 
-                          key={job.id} 
-                          className={`hover:bg-blue-50 cursor-pointer ${job.priorityTier === "Critical" ? "bg-red-50/50" : ""}`}
-                          onClick={() => handleSelectJob(job)}
-                        >
-                          <td className="p-2 text-center font-bold text-gray-900">{job.rank}</td>
-                          <td className="p-2">
-                            <span className="font-mono text-blue-600">{job.id}</span>
-                            {job.dpasFlag && <Badge className="ml-1 text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
-                          </td>
-                          <td className="p-2">
-                            <p className="font-medium text-gray-900">{job.program}</p>
-                            <p className="text-gray-500">{job.clin}</p>
-                          </td>
-                          <td className="p-2 text-gray-700">{job.customer}</td>
-                          <td className="p-2 text-center"><StatusBadge status={job.status} /></td>
-                          <td className={`p-2 text-center font-semibold ${job.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                            {job.status === "Late" ? `+${getDaysLateForBaseline(job)}` : getDaysLateForBaseline(job)}
-                          </td>
-                          <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} score={job.priorityScore} /></td>
-                          <td className="p-2">
-                            <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
-                              {job.primaryCause}
-                            </Badge>
-                          </td>
-                          <td className="p-2 text-gray-600">{job.blockingFunction}</td>
-                          <td className="p-2 text-gray-700">{job.owner}</td>
-                          <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
-                        </tr>
-                      ))}
+                      {filteredJobs.slice(0, 15).map((job) => {
+                        const daysDisplay = formatDaysDisplay(job)
+                        return (
+                          <tr 
+                            key={job.id} 
+                            className={`hover:bg-blue-50 cursor-pointer ${job.priorityTier === "Critical" ? "bg-red-50/50" : ""}`}
+                            onClick={() => handleSelectJob(job)}
+                          >
+                            <td className="p-2 text-center font-bold text-gray-900">{job.rank}</td>
+                            <td className="p-2">
+                              <span className="font-mono text-blue-600">{job.id}</span>
+                              {job.dpasFlag && <Badge className="ml-1 text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
+                            </td>
+                            <td className="p-2">
+                              <p className="font-medium text-gray-900">{job.program}</p>
+                              <button 
+                                className="text-blue-600 hover:underline text-left"
+                                onClick={(e) => { e.stopPropagation(); navigateToJobsWithFilter({ clin: job.clin }) }}
+                              >
+                                {job.clin}
+                              </button>
+                            </td>
+                            <td className="p-2 text-gray-700">{job.customer}</td>
+                            <td className="p-2 text-center"><StatusBadge status={job.status} /></td>
+                            <td className="p-2 text-center">
+                              <div className={`font-semibold ${daysDisplay.colorClass}`}>
+                                {daysDisplay.value}
+                              </div>
+                              <div className="text-[9px] text-gray-400">{daysDisplay.label}</div>
+                            </td>
+                            <td className="p-2 text-center">
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <PriorityBadge tier={job.priorityTier} score={job.priorityScore} />
+                                </TooltipTrigger>
+                                <TooltipContent side="left" className="max-w-sm bg-gray-900 text-white p-3">
+                                  <p className="font-semibold text-xs mb-2">Why is this job ranked #{job.rank}?</p>
+                                  <p className="text-[10px] text-gray-300 mb-2">{job.priorityExplanation}</p>
+                                  <div className="space-y-1">
+                                    <div className="flex justify-between text-[10px]">
+                                      <span>CLIN Criticality:</span>
+                                      <span className="font-medium">{job.priorityFactors.clinCriticality}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[10px]">
+                                      <span>DPAS/Visibility:</span>
+                                      <span className="font-medium">{job.priorityFactors.dpasVisibility}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[10px]">
+                                      <span>Revenue/AOP:</span>
+                                      <span className="font-medium">{job.priorityFactors.revenueAOP}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[10px]">
+                                      <span>Critical Path:</span>
+                                      <span className="font-medium">{job.priorityFactors.criticalPathRole}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[10px]">
+                                      <span>Due Urgency:</span>
+                                      <span className="font-medium">{job.priorityFactors.dueWindowUrgency}</span>
+                                    </div>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </td>
+                            <td className="p-2">
+                              <button
+                                className="text-left"
+                                onClick={(e) => { e.stopPropagation(); navigateToJobsWithFilter({ rootCause: job.primaryCause }) }}
+                              >
+                                <Badge variant="outline" className="text-[9px] hover:bg-gray-100" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
+                                  {job.primaryCause}
+                                </Badge>
+                              </button>
+                            </td>
+                            <td className="p-2 text-gray-600">{job.blockingFunction}</td>
+                            <td className="p-2 text-gray-700">{job.owner}</td>
+                            <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -831,12 +1144,41 @@ export function LateJobTracking() {
               })}
             </div>
             
-            {/* Main Job Table */}
+            {/* Drill-Down Filter Indicator */}
+            {(drillDownCLIN || drillDownRootCause || drillDownPriorityTier) && (
+              <Card className="border border-blue-200 bg-blue-50">
+                <CardContent className="p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Filter className="w-4 h-4 text-blue-600" />
+                      <span className="text-sm font-medium text-blue-800">Filtered View:</span>
+                      {drillDownCLIN && (
+                        <Badge className="bg-blue-100 text-blue-700">CLIN: {drillDownCLIN}</Badge>
+                      )}
+                      {drillDownRootCause && (
+                        <Badge className="bg-blue-100 text-blue-700">Root Cause: {drillDownRootCause}</Badge>
+                      )}
+                      {drillDownPriorityTier && (
+                        <Badge className="bg-blue-100 text-blue-700">Priority: {drillDownPriorityTier}</Badge>
+                      )}
+                    </div>
+                    <Button variant="outline" size="sm" onClick={clearDrillDownFilters} className="text-xs">
+                      Clear Filters
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            
+            {/* Main Job Table - Core Resolution Layer */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-bold text-gray-800">Prioritized Late Job List</CardTitle>
-                  <span className="text-xs text-gray-500">{filteredJobs.length} jobs • Sorted by Priority Score</span>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Prioritized Late Job List</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">The shared protect/recover list - all tabs drill into this view</p>
+                  </div>
+                  <span className="text-xs text-gray-500">{filteredJobs.length} jobs | Sorted by Priority Score</span>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -855,7 +1197,17 @@ export function LateJobTracking() {
                         <th className="text-left p-2 font-semibold text-gray-700">Site</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Workcenter</th>
                         <th className="text-center p-2 font-semibold text-gray-700">Status</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Days Late</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">
+                          <Tooltip>
+                            <TooltipTrigger className="flex items-center gap-1 justify-center">
+                              Days <Info className="w-3 h-3 text-gray-400" />
+                            </TooltipTrigger>
+                            <TooltipContent className="text-xs bg-gray-900 text-white p-2">
+                              <p><strong>Late:</strong> +N days past due</p>
+                              <p><strong>Forecast:</strong> N days to risk</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </th>
                         <th className="text-left p-2 font-semibold text-gray-700">Required</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Predicted</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Primary Cause</th>
@@ -868,45 +1220,66 @@ export function LateJobTracking() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {filteredJobs.map((job) => (
-                        <tr 
-                          key={job.id} 
-                          className={`hover:bg-blue-50 cursor-pointer ${job.priorityTier === "Critical" ? "bg-red-50/30" : job.priorityTier === "High" ? "bg-amber-50/30" : ""}`}
-                          onClick={() => handleSelectJob(job)}
-                        >
-                          <td className="p-2 text-center font-bold text-gray-900 sticky left-0 bg-inherit">{job.rank}</td>
-                          <td className="p-2 sticky left-12 bg-inherit"><PriorityBadge tier={job.priorityTier} score={job.priorityScore} /></td>
-                          <td className="p-2 sticky left-24 bg-inherit font-mono text-blue-600">{job.id}</td>
-                          <td className="p-2 text-gray-700">{job.parentAssembly}</td>
-                          <td className="p-2 text-gray-700 font-medium">{job.program}</td>
-                          <td className="p-2 text-gray-600">{job.clin}</td>
-                          <td className="p-2 text-center">
-                            {job.dpasFlag && <Badge className="text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
-                          </td>
-                          <td className="p-2 text-gray-700">{job.customer}</td>
-                          <td className="p-2 text-gray-600">{job.site}</td>
-                          <td className="p-2 text-gray-600">{job.workcenter}</td>
-                          <td className="p-2 text-center"><StatusBadge status={job.status} /></td>
-                          <td className={`p-2 text-center font-semibold ${job.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                            {job.status === "Late" ? `+${getDaysLateForBaseline(job)}` : getDaysLateForBaseline(job)}
-                          </td>
-                          <td className="p-2 text-gray-600">{formatDate(job.requiredDate)}</td>
-                          <td className="p-2 text-gray-600">{formatDate(job.predictedCompletion)}</td>
-                          <td className="p-2">
-                            <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
-                              {job.primaryCause}
-                            </Badge>
-                          </td>
-                          <td className="p-2 text-gray-600">{job.blockingFunction}</td>
-                          <td className="p-2 text-right font-medium text-gray-700">{formatCurrency(job.revenueImpact)}</td>
-                          <td className="p-2 text-center">
-                            {job.criticalPath && <Badge className="text-[8px] bg-purple-100 text-purple-700">CP</Badge>}
-                          </td>
-                          <td className="p-2 text-gray-700">{job.owner}</td>
-                          <td className="p-2 text-gray-600 max-w-[150px] truncate">{job.nextAction}</td>
-                          <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
-                        </tr>
-                      ))}
+                      {filteredJobs.map((job) => {
+                        const daysDisplay = formatDaysDisplay(job)
+                        return (
+                          <tr 
+                            key={job.id} 
+                            className={`hover:bg-blue-50 cursor-pointer ${job.priorityTier === "Critical" ? "bg-red-50/30" : job.priorityTier === "High" ? "bg-amber-50/30" : ""}`}
+                            onClick={() => handleSelectJob(job)}
+                          >
+                            <td className="p-2 text-center font-bold text-gray-900 sticky left-0 bg-inherit">{job.rank}</td>
+                            <td className="p-2 sticky left-12 bg-inherit">
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <PriorityBadge tier={job.priorityTier} score={job.priorityScore} />
+                                </TooltipTrigger>
+                                <TooltipContent side="right" className="max-w-sm bg-gray-900 text-white p-3">
+                                  <p className="font-semibold text-xs mb-2">Why #{job.rank}?</p>
+                                  <p className="text-[10px] text-gray-300 mb-2">{job.priorityExplanation}</p>
+                                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px]">
+                                    <span>CLIN:</span><span className="font-medium">{job.priorityFactors.clinCriticality}</span>
+                                    <span>DPAS:</span><span className="font-medium">{job.priorityFactors.dpasVisibility}</span>
+                                    <span>Revenue:</span><span className="font-medium">{job.priorityFactors.revenueAOP}</span>
+                                    <span>Crit Path:</span><span className="font-medium">{job.priorityFactors.criticalPathRole}</span>
+                                    <span>Urgency:</span><span className="font-medium">{job.priorityFactors.dueWindowUrgency}</span>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </td>
+                            <td className="p-2 sticky left-24 bg-inherit font-mono text-blue-600">{job.id}</td>
+                            <td className="p-2 text-gray-700">{job.parentAssembly}</td>
+                            <td className="p-2 text-gray-700 font-medium">{job.program}</td>
+                            <td className="p-2 text-gray-600">{job.clin}</td>
+                            <td className="p-2 text-center">
+                              {job.dpasFlag && <Badge className="text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
+                            </td>
+                            <td className="p-2 text-gray-700">{job.customer}</td>
+                            <td className="p-2 text-gray-600">{job.site}</td>
+                            <td className="p-2 text-gray-600">{job.workcenter}</td>
+                            <td className="p-2 text-center"><StatusBadge status={job.status} /></td>
+                            <td className="p-2 text-center">
+                              <div className={`font-semibold ${daysDisplay.colorClass}`}>{daysDisplay.value}</div>
+                              <div className="text-[8px] text-gray-400">{daysDisplay.label}</div>
+                            </td>
+                            <td className="p-2 text-gray-600">{formatDate(job.requiredDate)}</td>
+                            <td className="p-2 text-gray-600">{formatDate(job.predictedCompletion)}</td>
+                            <td className="p-2">
+                              <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
+                                {job.primaryCause}
+                              </Badge>
+                            </td>
+                            <td className="p-2 text-gray-600">{job.blockingFunction}</td>
+                            <td className="p-2 text-right font-medium text-gray-700">{formatCurrency(job.revenueImpact)}</td>
+                            <td className="p-2 text-center">
+                              {job.criticalPath && <Badge className="text-[8px] bg-purple-100 text-purple-700">CP</Badge>}
+                            </td>
+                            <td className="p-2 text-gray-700">{job.owner}</td>
+                            <td className="p-2 text-gray-600 max-w-[150px] truncate">{job.nextAction}</td>
+                            <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
