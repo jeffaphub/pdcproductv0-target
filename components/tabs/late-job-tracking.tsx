@@ -93,8 +93,13 @@ interface LateJob {
   // Governance tracking
   wasOnProtectList: boolean
   daysVisibleBeforeLate: number | null
+  daysOnProtectList: number // How long this job has been on the protect list
+  protectListEntryDate: Date // When the job entered the protect list
   actionTaken: string | null
   actionWorked: boolean | null
+  actionStatus: "Open" | "In Progress" | "Waiting" | "Escalated" | "Resolved"
+  escalationNeeded: boolean
+  lastOwnerUpdate: Date
 }
 
 // Recovery confidence calculation factors
@@ -310,8 +315,13 @@ function generateLateJobs(): LateJob[] {
       supplierSlipDays,
       wasOnProtectList: seededRandom(seed + 48) > 0.3,
       daysVisibleBeforeLate: status === "Late" && seededRandom(seed + 48) > 0.3 ? Math.floor(seededRandom(seed + 49) * 14) + 1 : null,
+      daysOnProtectList: Math.floor(seededRandom(seed + 53) * 21) + 1, // 1-21 days on protect list
+      protectListEntryDate: new Date(Date.now() - Math.floor(seededRandom(seed + 53) * 21 + 1) * 86400000),
       actionTaken: seededRandom(seed + 48) > 0.3 ? ["Expedited", "Escalated", "Alternate source", "Overtime scheduled"][Math.floor(seededRandom(seed + 51) * 4)] : null,
-      actionWorked: seededRandom(seed + 48) > 0.3 ? seededRandom(seed + 52) > 0.4 : null
+      actionWorked: seededRandom(seed + 48) > 0.3 ? seededRandom(seed + 52) > 0.4 : null,
+      actionStatus: ["Open", "In Progress", "Waiting", "Escalated", "Resolved"][Math.floor(seededRandom(seed + 54) * 5)] as LateJob["actionStatus"],
+      escalationNeeded: priorityScore >= 75 && seededRandom(seed + 55) > 0.6,
+      lastOwnerUpdate: new Date(Date.now() - Math.floor(seededRandom(seed + 56) * 72) * 3600000)
     })
   }
   
@@ -1330,55 +1340,155 @@ export function LateJobTracking() {
         {/* TAB 3: Program / CLIN Impact */}
         {activeTab === "clin" && (
           <div className="space-y-6">
-            {/* CLIN Risk Heatmap */}
-            <Card className="border border-gray-200">
-              <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Program / CLIN Risk Heatmap</CardTitle>
-              </CardHeader>
-              <CardContent className="p-4">
-                <div className="grid grid-cols-12 gap-1">
-                  <div className="col-span-2" />
-                  {Array.from({ length: 10 }, (_, i) => (
-                    <div key={i} className="text-center text-[10px] text-gray-500 font-medium">
-                      W{i + 1}
-                    </div>
-                  ))}
-                  {programs.slice(0, 5).map((program, pIdx) => (
-                    <>
-                      <div key={`label-${pIdx}`} className="col-span-2 text-xs font-medium text-gray-700 truncate pr-2">
-                        {program}
-                      </div>
-                      {Array.from({ length: 10 }, (_, wIdx) => {
-                        const risk = seededRandom(pIdx * 100 + wIdx) * 100
-                        return (
-                          <div
-                            key={`cell-${pIdx}-${wIdx}`}
-                            className="h-8 rounded flex items-center justify-center text-[10px] font-medium"
-                            style={{
-                              backgroundColor: risk > 70 ? "#fee2e2" : risk > 40 ? "#fef3c7" : risk > 10 ? "#dbeafe" : "#f3f4f6",
-                              color: risk > 70 ? "#991b1b" : risk > 40 ? "#92400e" : risk > 10 ? "#1e40af" : "#6b7280"
-                            }}
-                          >
-                            {risk > 10 ? Math.floor(risk / 10) : ""}
-                          </div>
-                        )
-                      })}
-                    </>
-                  ))}
-                </div>
-                <div className="flex items-center justify-center gap-4 mt-3 text-[10px]">
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100" /> High Risk</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-100" /> Medium</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100" /> Low</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-100" /> Clear</span>
-                </div>
-              </CardContent>
-            </Card>
+            {/* Tab Banner */}
+            <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
+              <p className="text-sm text-purple-800">
+                <strong>Near-term delivery and milestone commitments</strong> threatened by prioritized jobs in the shared protect/recover list.
+              </p>
+            </div>
             
-            {/* Jobs Driving Commitment Risk */}
+            <div className="grid grid-cols-2 gap-6">
+              {/* Near-Term Commitment Timeline */}
+              <Card className="border border-gray-200">
+                <CardHeader className="py-3 px-4 border-b border-gray-100">
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Near-Term Commitment Timeline</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Upcoming CLINs / milestones with linked prioritized jobs</p>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <div className="space-y-3 max-h-[300px] overflow-auto">
+                    {clinImpacts.slice(0, 8).map((impact, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`p-3 rounded-lg border cursor-pointer hover:border-blue-400 transition-colors ${
+                          impact.recoveryConfidence === "Low" ? "bg-red-50 border-red-200" : 
+                          impact.recoveryConfidence === "Medium" ? "bg-amber-50 border-amber-200" : 
+                          "bg-gray-50 border-gray-200"
+                        }`}
+                        onClick={() => navigateToJobsWithFilter({ clin: impact.clin })}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-900">{impact.program}</span>
+                            <Badge variant="outline" className="text-[9px]">{impact.milestoneType}</Badge>
+                            {impact.dpasFlag && <Badge className="text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
+                          </div>
+                          <span className="text-xs text-gray-600">{formatDate(impact.requiredDate)}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] text-gray-600">
+                              <strong className="text-red-600">{impact.linkedLateJobs}</strong> Late + 
+                              <strong className="text-amber-600"> {impact.linkedForecastLateJobs}</strong> Forecast
+                            </span>
+                            <PriorityBadge tier={impact.highestPriorityTier} />
+                          </div>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Badge className={`text-[9px] ${
+                                impact.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : 
+                                impact.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : 
+                                "bg-red-100 text-red-700"
+                              }`}>
+                                {impact.recoveryConfidence} Confidence
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs text-xs bg-gray-900 text-white p-2">
+                              <p className="font-semibold mb-1">Recovery Confidence Factors:</p>
+                              <p>{impact.recoveryConfidenceFactors.explanation}</p>
+                              <div className="mt-1 text-[10px] text-gray-300">
+                                <p>Material: {impact.recoveryConfidenceFactors.materialAvailability}</p>
+                                <p>Supplier: {impact.recoveryConfidenceFactors.supplierReliability}</p>
+                                <p>Capacity: {impact.recoveryConfidenceFactors.capacityAvailable ? "Available" : "Constrained"}</p>
+                                <p>Time: {impact.daysToCommitment}d remaining</p>
+                              </div>
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                        <div className="text-[10px] text-blue-600 mt-1">Click to view linked jobs →</div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+              
+              {/* CLIN Risk Heatmap with Real Dates */}
+              <Card className="border border-gray-200">
+                <CardHeader className="py-3 px-4 border-b border-gray-100">
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Commitment Risk by Week</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Weighted commitment risk, click cells to drill into jobs</p>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <div className="grid grid-cols-12 gap-1">
+                    <div className="col-span-2" />
+                    {Array.from({ length: 10 }, (_, i) => {
+                      const weekDate = new Date(Date.now() + i * 7 * 86400000)
+                      return (
+                        <div key={i} className="text-center text-[9px] text-gray-500 font-medium">
+                          {weekDate.getMonth() + 1}/{weekDate.getDate()}
+                        </div>
+                      )
+                    })}
+                    {programs.slice(0, 5).map((program, pIdx) => (
+                      <>
+                        <div key={`label-${pIdx}`} className="col-span-2 text-[10px] font-medium text-gray-700 truncate pr-2">
+                          {program.split(" ")[0]}
+                        </div>
+                        {Array.from({ length: 10 }, (_, wIdx) => {
+                          const linkedJobs = Math.floor(seededRandom(pIdx * 100 + wIdx) * 5)
+                          const highestPriority = Math.floor(seededRandom(pIdx * 100 + wIdx + 50) * 100)
+                          const risk = linkedJobs * (highestPriority / 100) * 20
+                          return (
+                            <Tooltip key={`cell-${pIdx}-${wIdx}`}>
+                              <TooltipTrigger asChild>
+                                <div
+                                  className="h-8 rounded flex items-center justify-center text-[10px] font-medium cursor-pointer hover:ring-2 hover:ring-blue-400"
+                                  style={{
+                                    backgroundColor: risk > 50 ? "#fee2e2" : risk > 25 ? "#fef3c7" : risk > 5 ? "#dbeafe" : "#f3f4f6",
+                                    color: risk > 50 ? "#991b1b" : risk > 25 ? "#92400e" : risk > 5 ? "#1e40af" : "#6b7280"
+                                  }}
+                                  onClick={() => navigateToJobsWithFilter({ priorityTier: highestPriority >= 85 ? "Critical" : highestPriority >= 65 ? "High" : "Medium" })}
+                                >
+                                  {linkedJobs > 0 ? linkedJobs : ""}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent className="text-xs bg-gray-900 text-white p-2">
+                                <p className="font-semibold">{program}</p>
+                                <p>Week of {new Date(Date.now() + wIdx * 7 * 86400000).toLocaleDateString()}</p>
+                                <p className="mt-1">Linked Jobs: {linkedJobs}</p>
+                                <p>Highest Priority: {highestPriority}</p>
+                                <p>Primary Blocker: Supply Shortage</p>
+                                <p>Revenue at Risk: {formatCurrency(linkedJobs * 500000)}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          )
+                        })}
+                      </>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-center gap-4 mt-3 text-[10px]">
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100" /> High Risk</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-100" /> Medium</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100" /> Low</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-100" /> Clear</span>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+            
+            {/* Jobs Driving Commitment Risk - Enhanced */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Jobs Driving Commitment Risk</CardTitle>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Commitments at Risk</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">CLINs/milestones with linked Late and Forecast-Late jobs</p>
+                  </div>
+                  <Badge className="bg-purple-100 text-purple-700 text-[10px]">Click rows to filter job list</Badge>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="max-h-[400px] overflow-auto">
@@ -1387,26 +1497,60 @@ export function LateJobTracking() {
                       <tr className="border-b border-gray-200">
                         <th className="text-left p-2 font-semibold text-gray-700">Program</th>
                         <th className="text-left p-2 font-semibold text-gray-700">CLIN</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Milestone</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Customer</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Required Date</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Linked Late Jobs</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Highest Priority</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Days to Commit</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">
+                          <Tooltip>
+                            <TooltipTrigger className="flex items-center gap-1">
+                              Late / Forecast <Info className="w-3 h-3 text-gray-400" />
+                            </TooltipTrigger>
+                            <TooltipContent className="text-xs bg-gray-900 text-white p-2">
+                              Count of Late jobs / Forecast-Late jobs linked to this commitment
+                            </TooltipContent>
+                          </Tooltip>
+                        </th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Primary Blocker</th>
                         <th className="text-right p-2 font-semibold text-gray-700">Revenue at Risk</th>
                         <th className="text-center p-2 font-semibold text-gray-700">DPAS</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Recovery Confidence</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">
+                          <Tooltip>
+                            <TooltipTrigger className="flex items-center gap-1">
+                              Confidence <Info className="w-3 h-3 text-gray-400" />
+                            </TooltipTrigger>
+                            <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                              Based on: time remaining, blocker severity, open actions, supply certainty, capacity status
+                            </TooltipContent>
+                          </Tooltip>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {clinImpacts.slice(0, 20).map((impact, idx) => (
-                        <tr key={idx} className={`hover:bg-blue-50 ${impact.recoveryConfidence === "Low" ? "bg-red-50/30" : ""}`}>
+                        <tr 
+                          key={idx} 
+                          className={`hover:bg-blue-50 cursor-pointer ${impact.recoveryConfidence === "Low" ? "bg-red-50/30" : ""}`}
+                          onClick={() => navigateToJobsWithFilter({ clin: impact.clin })}
+                        >
                           <td className="p-2 font-medium text-gray-900">{impact.program}</td>
-                          <td className="p-2 text-blue-600">{impact.clin}</td>
+                          <td className="p-2 text-blue-600 hover:underline">{impact.clin}</td>
+                          <td className="p-2 text-center">
+                            <Badge variant="outline" className="text-[9px]">{impact.milestoneType}</Badge>
+                          </td>
                           <td className="p-2 text-gray-700">{impact.customer}</td>
                           <td className="p-2 text-gray-600">{formatDate(impact.requiredDate)}</td>
-                          <td className="p-2 text-center font-semibold text-gray-900">{impact.linkedLateJobs}</td>
+                          <td className={`p-2 text-center font-semibold ${impact.daysToCommitment <= 7 ? "text-red-600" : impact.daysToCommitment <= 14 ? "text-amber-600" : "text-gray-700"}`}>
+                            {impact.daysToCommitment}d
+                          </td>
                           <td className="p-2 text-center">
-                            <PriorityBadge tier={impact.highestPriority >= 85 ? "Critical" : impact.highestPriority >= 65 ? "High" : impact.highestPriority >= 40 ? "Medium" : "Low"} score={impact.highestPriority} />
+                            <span className="text-red-600 font-semibold">{impact.linkedLateJobs}</span>
+                            <span className="text-gray-400"> / </span>
+                            <span className="text-amber-600 font-semibold">{impact.linkedForecastLateJobs}</span>
+                          </td>
+                          <td className="p-2 text-center">
+                            <PriorityBadge tier={impact.highestPriorityTier} score={impact.highestPriority} />
                           </td>
                           <td className="p-2">
                             <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[impact.primaryBlocker], color: ROOT_CAUSE_COLORS[impact.primaryBlocker] }}>
@@ -1418,9 +1562,16 @@ export function LateJobTracking() {
                             {impact.dpasFlag && <Badge className="text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
                           </td>
                           <td className="p-2 text-center">
-                            <Badge className={`text-[9px] ${impact.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : impact.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
-                              {impact.recoveryConfidence}
-                            </Badge>
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <Badge className={`text-[9px] ${impact.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : impact.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
+                                  {impact.recoveryConfidence}
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                                {impact.recoveryConfidenceFactors.explanation}
+                              </TooltipContent>
+                            </Tooltip>
                           </td>
                         </tr>
                       ))}
@@ -1435,11 +1586,52 @@ export function LateJobTracking() {
         {/* TAB 4: Root Cause & Recovery */}
         {activeTab === "rootcause" && (
           <div className="space-y-6">
+            {/* Hotspot Lens Toggle */}
+            <Card className="border border-gray-200">
+              <CardContent className="p-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-gray-700">Evidence Lens:</span>
+                  {[
+                    { id: "all", label: "All", icon: Layers },
+                    { id: "supplier", label: "Supplier", icon: Truck },
+                    { id: "quality", label: "Quality/MRB/RI", icon: AlertTriangle },
+                    { id: "capacity", label: "Workcenter/Test", icon: Wrench },
+                    { id: "material", label: "Inventory/Material", icon: Package },
+                    { id: "planning", label: "Planning/Data", icon: FileText }
+                  ].map(lens => (
+                    <button
+                      key={lens.id}
+                      onClick={() => {
+                        if (lens.id === "supplier") navigateToJobsWithFilter({ rootCause: "Supplier Slip" })
+                        else if (lens.id === "quality") navigateToJobsWithFilter({ rootCause: "MRB/RI Hold" })
+                        else if (lens.id === "capacity") navigateToJobsWithFilter({ rootCause: "Capacity Constraint" })
+                        else if (lens.id === "material") navigateToJobsWithFilter({ rootCause: "Supply Shortage" })
+                        else if (lens.id === "planning") navigateToJobsWithFilter({ rootCause: "Data/Planning" })
+                        else clearDrillDownFilters()
+                      }}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-colors ${
+                        lens.id === "all" && !drillDownRootCause
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                      }`}
+                    >
+                      <lens.icon className="w-3.5 h-3.5" />
+                      {lens.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-500 mt-2">Select a lens to filter the prioritized job list by evidence category</p>
+              </CardContent>
+            </Card>
+            
             <div className="grid grid-cols-2 gap-6">
               {/* Weighted Root Cause Pareto */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Weighted Root Cause Pareto</CardTitle>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Weighted Root Cause Pareto</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Click bars to filter job list by root cause</p>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
                   <ResponsiveContainer width="100%" height={300}>
@@ -1454,15 +1646,22 @@ export function LateJobTracking() {
                             return (
                               <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
                                 <p className="font-semibold">{data.cause}</p>
-                                <p>Count: {data.count}</p>
+                                <p>Job Count: {data.count}</p>
                                 <p>Weighted Impact: {data.weightedImpact.toFixed(0)}</p>
+                                <p className="text-blue-600 text-[10px] mt-1">Click to filter job list</p>
                               </div>
                             )
                           }
                           return null
                         }}
                       />
-                      <Bar dataKey="weightedImpact" fill={COLORS.primary} radius={[0, 4, 4, 0]}>
+                      <Bar 
+                        dataKey="weightedImpact" 
+                        fill={COLORS.primary} 
+                        radius={[0, 4, 4, 0]}
+                        onClick={(data) => navigateToJobsWithFilter({ rootCause: data.cause as RootCause })}
+                        cursor="pointer"
+                      >
                         {rootCauseData.slice(0, 8).map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={ROOT_CAUSE_COLORS[entry.cause as RootCause] || COLORS.primary} />
                         ))}
@@ -1476,7 +1675,10 @@ export function LateJobTracking() {
               {/* Blocker by Function */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Blocker by Function</CardTitle>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Blocking Function Distribution</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Jobs by blocking function and priority tier</p>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
                   <ResponsiveContainer width="100%" height={300}>
@@ -1496,51 +1698,97 @@ export function LateJobTracking() {
               </Card>
             </div>
             
-            {/* Action Queue */}
+            {/* Evidence-Based Action Queue */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Action Queue for High-Impact Jobs</CardTitle>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Action Queue for High-Impact Jobs</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Evidence-linked recovery actions for Critical and High priority jobs</p>
+                  </div>
+                  <Badge className="bg-amber-100 text-amber-700 text-[10px]">Operational Focus</Badge>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
-                <div className="max-h-[350px] overflow-auto">
+                <div className="max-h-[400px] overflow-auto">
                   <table className="w-full text-xs">
                     <thead className="bg-gray-50 sticky top-0">
                       <tr className="border-b border-gray-200">
                         <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
                         <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Root Cause</th>
-                        <th className="text-left p-2 font-semibold text-gray-700">Evidence Link</th>
+                        <th className="text-left p-2 font-semibold text-gray-700">Evidence Type</th>
+                        <th className="text-left p-2 font-semibold text-gray-700">Evidence Reference</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Blocking Function</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Action Status</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Recovery ETA</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Escalation?</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Escalation</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {filteredJobs.filter(j => j.priorityTier === "Critical" || j.priorityTier === "High").slice(0, 15).map((job) => (
-                        <tr key={job.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectJob(job)}>
-                          <td className="p-2 font-mono text-blue-600">{job.id}</td>
-                          <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
-                          <td className="p-2">
-                            <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
-                              {job.primaryCause}
-                            </Badge>
-                          </td>
-                          <td className="p-2 text-blue-600 font-mono">
-                            {job.linkedPO || job.linkedMRB || job.linkedNC || job.linkedRI || "-"}
-                          </td>
-                          <td className="p-2 text-gray-700">{job.blockingFunction}</td>
-                          <td className="p-2 text-gray-700">{job.owner}</td>
-                          <td className="p-2 text-gray-600 max-w-[180px] truncate">{job.nextAction}</td>
-                          <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
-                          <td className="p-2 text-center">
-                            {job.priorityTier === "Critical" && (
-                              <Badge className="text-[8px] bg-red-100 text-red-700">Yes</Badge>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                      {filteredJobs.filter(j => j.priorityTier === "Critical" || j.priorityTier === "High").slice(0, 15).map((job) => {
+                        // Determine evidence type based on root cause
+                        let evidenceType = "General"
+                        let evidenceRef = "-"
+                        let evidenceStatus = ""
+                        if (job.linkedPO) { evidenceType = "PO"; evidenceRef = job.linkedPO; evidenceStatus = job.poPromiseDate ? `Promise: ${formatDate(job.poPromiseDate)}` : "" }
+                        else if (job.linkedMRB) { evidenceType = "MRB"; evidenceRef = job.linkedMRB; evidenceStatus = job.mrbStatus || "" }
+                        else if (job.linkedNC) { evidenceType = "NC"; evidenceRef = job.linkedNC; evidenceStatus = job.ncStatus || "" }
+                        else if (job.linkedRI) { evidenceType = "RI"; evidenceRef = job.linkedRI; evidenceStatus = job.riStatus || "" }
+                        else if (job.linkedRouting) { evidenceType = "Routing"; evidenceRef = job.linkedRouting; evidenceStatus = job.routingStatus || "" }
+                        else if (job.linkedCapacity) { evidenceType = "Capacity"; evidenceRef = job.linkedCapacity; evidenceStatus = job.capacityQueue ? `Queue: ${job.capacityQueue}` : "" }
+                        
+                        return (
+                          <tr key={job.id} className={`hover:bg-blue-50 cursor-pointer ${job.escalationNeeded ? "bg-red-50/30" : ""}`} onClick={() => handleSelectJob(job)}>
+                            <td className="p-2 font-mono text-blue-600">{job.id}</td>
+                            <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
+                            <td className="p-2">
+                              <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
+                                {job.primaryCause}
+                              </Badge>
+                            </td>
+                            <td className="p-2">
+                              <Badge className={`text-[9px] ${
+                                evidenceType === "PO" ? "bg-purple-100 text-purple-700" :
+                                evidenceType === "MRB" || evidenceType === "NC" || evidenceType === "RI" ? "bg-pink-100 text-pink-700" :
+                                evidenceType === "Routing" ? "bg-cyan-100 text-cyan-700" :
+                                evidenceType === "Capacity" ? "bg-orange-100 text-orange-700" :
+                                "bg-gray-100 text-gray-600"
+                              }`}>
+                                {evidenceType}
+                              </Badge>
+                            </td>
+                            <td className="p-2">
+                              <span className="font-mono text-blue-600">{evidenceRef}</span>
+                              {evidenceStatus && <span className="text-[9px] text-gray-500 block">{evidenceStatus}</span>}
+                            </td>
+                            <td className="p-2 text-gray-700">{job.blockingFunction}</td>
+                            <td className="p-2 text-gray-700">{job.owner}</td>
+                            <td className="p-2 text-gray-600 max-w-[150px] truncate" title={job.nextAction}>{job.nextAction}</td>
+                            <td className="p-2 text-center">
+                              <Badge className={`text-[9px] ${
+                                job.actionStatus === "Open" ? "bg-gray-100 text-gray-600" :
+                                job.actionStatus === "In Progress" ? "bg-blue-100 text-blue-700" :
+                                job.actionStatus === "Waiting" ? "bg-amber-100 text-amber-700" :
+                                job.actionStatus === "Escalated" ? "bg-red-100 text-red-700" :
+                                "bg-green-100 text-green-700"
+                              }`}>
+                                {job.actionStatus}
+                              </Badge>
+                            </td>
+                            <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
+                            <td className="p-2 text-center">
+                              {job.escalationNeeded ? (
+                                <Badge className="text-[8px] bg-red-100 text-red-700">Needed</Badge>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1584,12 +1832,39 @@ export function LateJobTracking() {
             {/* Production Control View */}
             {workbenchRole === "production-control" && (
               <div className="space-y-4">
+                {/* Key Metrics for Production Control */}
+                <div className="grid grid-cols-4 gap-4">
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Constrained Workcenter Queue</div>
+                    <div className="text-xl font-bold text-gray-900">{filteredJobs.filter(j => j.linkedCapacity).length}</div>
+                    <div className="text-[10px] text-gray-500">jobs at capacity-limited cells</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Ready to Run</div>
+                    <div className="text-xl font-bold text-green-600">{filteredJobs.filter(j => j.materialStatus === "Available" && j.actionStatus !== "Waiting").length}</div>
+                    <div className="text-[10px] text-gray-500">if blocker cleared today</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Material Blocked</div>
+                    <div className="text-xl font-bold text-red-600">{filteredJobs.filter(j => j.materialStatus === "Pending" || j.materialStatus === "On Order").length}</div>
+                    <div className="text-[10px] text-gray-500">awaiting material</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Test Cell Queue</div>
+                    <div className="text-xl font-bold text-amber-600">{filteredJobs.filter(j => j.testCell).length}</div>
+                    <div className="text-[10px] text-gray-500">jobs needing test</div>
+                  </Card>
+                </div>
+                
                 <Card className="border border-gray-200">
                   <CardHeader className="py-3 px-4 border-b border-gray-100">
-                    <CardTitle className="text-sm font-bold text-gray-800">Production Control: Release & Sequence Queue</CardTitle>
+                    <div>
+                      <CardTitle className="text-sm font-bold text-gray-800">Release & Sequence Queue</CardTitle>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Focus: Current operation, workcenter, material readiness, next action</p>
+                    </div>
                   </CardHeader>
                   <CardContent className="p-0">
-                    <div className="max-h-[500px] overflow-auto">
+                    <div className="max-h-[450px] overflow-auto">
                       <table className="w-full text-xs">
                         <thead className="bg-gray-50 sticky top-0">
                           <tr className="border-b border-gray-200">
@@ -1599,10 +1874,16 @@ export function LateJobTracking() {
                             <th className="text-left p-2 font-semibold text-gray-700">Program</th>
                             <th className="text-left p-2 font-semibold text-gray-700">Current Op</th>
                             <th className="text-left p-2 font-semibold text-gray-700">Workcenter</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Test Cell</th>
                             <th className="text-center p-2 font-semibold text-gray-700">Status</th>
-                            <th className="text-center p-2 font-semibold text-gray-700">Days Late</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">
+                              <Tooltip>
+                                <TooltipTrigger className="flex items-center gap-1">Days Late/Risk <Info className="w-3 h-3" /></TooltipTrigger>
+                                <TooltipContent className="text-xs">Days Late (red) or Days to Risk (amber)</TooltipContent>
+                              </Tooltip>
+                            </th>
                             <th className="text-left p-2 font-semibold text-gray-700">Required</th>
-                            <th className="text-left p-2 font-semibold text-gray-700">Material Status</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Material</th>
                             <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
                           </tr>
                         </thead>
@@ -1612,12 +1893,13 @@ export function LateJobTracking() {
                               <td className="p-2 font-bold text-gray-900">{job.rank}</td>
                               <td className="p-2 font-mono text-blue-600">{job.id}</td>
                               <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
-                              <td className="p-2 text-gray-700">{job.program}</td>
+                              <td className="p-2 text-gray-700">{job.program.split(" ")[0]}</td>
                               <td className="p-2 text-gray-600">{job.currentOperation}</td>
                               <td className="p-2 text-gray-600">{job.workcenter}</td>
+                              <td className="p-2 text-gray-600 text-[10px]">{job.testCell || "-"}</td>
                               <td className="p-2 text-center"><StatusBadge status={job.status} /></td>
                               <td className={`p-2 text-center font-semibold ${job.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                                {job.status === "Late" ? `+${getDaysLateForBaseline(job)}` : getDaysLateForBaseline(job)}
+                                {job.status === "Late" ? `+${job.daysLate}d` : `${job.daysToLateRisk}d`}
                               </td>
                               <td className="p-2 text-gray-600">{formatDate(job.requiredDate)}</td>
                               <td className="p-2">
@@ -1625,7 +1907,7 @@ export function LateJobTracking() {
                                   {job.materialStatus}
                                 </Badge>
                               </td>
-                              <td className="p-2 text-gray-600 max-w-[150px] truncate">{job.nextAction}</td>
+                              <td className="p-2 text-gray-600 max-w-[130px] truncate" title={job.nextAction}>{job.nextAction}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1638,145 +1920,297 @@ export function LateJobTracking() {
             
             {/* Supply Chain View */}
             {workbenchRole === "supply-chain" && (
-              <Card className="border border-gray-200">
-                <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Supply Chain: Prioritized Expedite Queue</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="max-h-[500px] overflow-auto">
-                    <table className="w-full text-xs">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr className="border-b border-gray-200">
-                          <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Cause</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Linked PO</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Supplier Promise</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Material Status</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Days Late</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {filteredJobs.filter(j => j.blockingFunction === "Supply Chain").slice(0, 20).map((job) => (
-                          <tr key={job.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectJob(job)}>
-                            <td className="p-2 font-mono text-blue-600">{job.id}</td>
-                            <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
-                            <td className="p-2">
-                              <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
-                                {job.primaryCause}
-                              </Badge>
-                            </td>
-                            <td className="p-2 font-mono text-blue-600">{job.linkedPO || "-"}</td>
-                            <td className="p-2 text-gray-600">{job.supplierPromiseDate ? formatDate(job.supplierPromiseDate) : "-"}</td>
-                            <td className="p-2">
-                              <Badge className={`text-[9px] ${job.materialStatus === "Available" ? "bg-green-100 text-green-700" : job.materialStatus === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
-                                {job.materialStatus}
-                              </Badge>
-                            </td>
-                            <td className={`p-2 text-center font-semibold ${job.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                              {job.status === "Late" ? `+${getDaysLateForBaseline(job)}` : getDaysLateForBaseline(job)}
-                            </td>
-                            <td className="p-2 text-gray-600 max-w-[180px] truncate">{job.nextAction}</td>
+              <div className="space-y-4">
+                {/* Key Metrics for Supply Chain */}
+                <div className="grid grid-cols-4 gap-4">
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Supplier-Driven Late Jobs</div>
+                    <div className="text-xl font-bold text-purple-600">{filteredJobs.filter(j => ["Supply Shortage", "Late PR/PO", "Supplier Slip"].includes(j.primaryCause)).length}</div>
+                    <div className="text-[10px] text-gray-500">require supply action</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">PO Not Released</div>
+                    <div className="text-xl font-bold text-red-600">{filteredJobs.filter(j => j.primaryCause === "Late PR/PO").length}</div>
+                    <div className="text-[10px] text-gray-500">PR/PO action needed</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Supplier Slips</div>
+                    <div className="text-xl font-bold text-amber-600">{filteredJobs.filter(j => j.supplierSlipDays && j.supplierSlipDays > 0).length}</div>
+                    <div className="text-[10px] text-gray-500">promise date missed</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Expedite Candidates</div>
+                    <div className="text-xl font-bold text-blue-600">{filteredJobs.filter(j => j.linkedPO && j.priorityTier === "Critical").length}</div>
+                    <div className="text-[10px] text-gray-500">critical with PO</div>
+                  </Card>
+                </div>
+                
+                <Card className="border border-gray-200">
+                  <CardHeader className="py-3 px-4 border-b border-gray-100">
+                    <div>
+                      <CardTitle className="text-sm font-bold text-gray-800">Prioritized Expedite Queue</CardTitle>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Focus: Supplier, PO/PR status, promise date, slip history, expedite action</p>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="max-h-[450px] overflow-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 sticky top-0">
+                          <tr className="border-b border-gray-200">
+                            <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Program/CLIN</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Cause</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">PO/PR Ref</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Promise Date</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">
+                              <Tooltip>
+                                <TooltipTrigger className="flex items-center gap-1">Slip <Info className="w-3 h-3" /></TooltipTrigger>
+                                <TooltipContent className="text-xs">Supplier historical slip days</TooltipContent>
+                              </Tooltip>
+                            </th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Material</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Next Supply Action</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {filteredJobs.filter(j => ["Supply Shortage", "Late PR/PO", "Supplier Slip"].includes(j.primaryCause) || j.blockingFunction === "Supply Chain").slice(0, 25).map((job) => (
+                            <tr key={job.id} className={`hover:bg-blue-50 cursor-pointer ${job.escalationNeeded ? "bg-red-50/30" : ""}`} onClick={() => handleSelectJob(job)}>
+                              <td className="p-2 font-mono text-blue-600">{job.id}</td>
+                              <td className="p-2 text-gray-700">
+                                <div className="text-[10px]">{job.program.split(" ")[0]}</div>
+                                <div className="text-blue-600 text-[9px]">{job.clin}</div>
+                              </td>
+                              <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
+                              <td className="p-2">
+                                <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
+                                  {job.primaryCause}
+                                </Badge>
+                              </td>
+                              <td className="p-2 font-mono text-blue-600 text-[10px]">{job.linkedPO || "PR Pending"}</td>
+                              <td className="p-2 text-gray-600">{job.supplierPromiseDate ? formatDate(job.supplierPromiseDate) : "-"}</td>
+                              <td className={`p-2 text-center font-semibold ${(job.supplierSlipDays || 0) > 5 ? "text-red-600" : (job.supplierSlipDays || 0) > 0 ? "text-amber-600" : "text-gray-400"}`}>
+                                {job.supplierSlipDays ? `+${job.supplierSlipDays}d` : "-"}
+                              </td>
+                              <td className="p-2">
+                                <Badge className={`text-[9px] ${job.materialStatus === "Available" ? "bg-green-100 text-green-700" : job.materialStatus === "In Transit" ? "bg-blue-100 text-blue-700" : job.materialStatus === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
+                                  {job.materialStatus}
+                                </Badge>
+                              </td>
+                              <td className="p-2 text-gray-600 max-w-[140px] truncate" title={job.nextAction}>{job.nextAction}</td>
+                              <td className="p-2 text-gray-600 text-[10px]">{job.owner.split(" ")[0]}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             )}
             
             {/* Quality View */}
             {workbenchRole === "quality" && (
-              <Card className="border border-gray-200">
-                <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Quality: MRB/RI Disposition Queue</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="max-h-[500px] overflow-auto">
-                    <table className="w-full text-xs">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr className="border-b border-gray-200">
-                          <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Cause</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">MRB/NC/RI</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Root Cause Detail</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Days Late</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {filteredJobs.filter(j => j.blockingFunction === "Quality/MRB").slice(0, 20).map((job) => (
-                          <tr key={job.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectJob(job)}>
-                            <td className="p-2 font-mono text-blue-600">{job.id}</td>
-                            <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
-                            <td className="p-2">
-                              <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
-                                {job.primaryCause}
-                              </Badge>
-                            </td>
-                            <td className="p-2 font-mono text-blue-600">{job.linkedMRB || job.linkedNC || job.linkedRI || "-"}</td>
-                            <td className="p-2 text-gray-600 max-w-[200px] truncate">{job.rootCauseDetail}</td>
-                            <td className={`p-2 text-center font-semibold ${job.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                              {job.status === "Late" ? `+${getDaysLateForBaseline(job)}` : getDaysLateForBaseline(job)}
-                            </td>
-                            <td className="p-2 text-gray-600 max-w-[180px] truncate">{job.nextAction}</td>
+              <div className="space-y-4">
+                {/* Key Metrics for Quality */}
+                <div className="grid grid-cols-4 gap-4">
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">MRB/RI/NC Driven</div>
+                    <div className="text-xl font-bold text-pink-600">{filteredJobs.filter(j => j.linkedMRB || j.linkedNC || j.linkedRI).length}</div>
+                    <div className="text-[10px] text-gray-500">quality holds blocking OTD</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Awaiting Disposition</div>
+                    <div className="text-xl font-bold text-red-600">{filteredJobs.filter(j => j.mrbStatus === "Awaiting Disposition" || j.riStatus === "Queued").length}</div>
+                    <div className="text-[10px] text-gray-500">urgent disposition needed</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">NC Investigation</div>
+                    <div className="text-xl font-bold text-amber-600">{filteredJobs.filter(j => j.ncStatus === "Investigation" || j.ncStatus === "Open").length}</div>
+                    <div className="text-[10px] text-gray-500">NC in progress</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">OTD Impact</div>
+                    <div className="text-xl font-bold text-gray-900">{formatCurrency(filteredJobs.filter(j => j.blockingFunction === "Quality/MRB").reduce((sum, j) => sum + j.revenueImpact, 0))}</div>
+                    <div className="text-[10px] text-gray-500">revenue at risk</div>
+                  </Card>
+                </div>
+                
+                <Card className="border border-gray-200">
+                  <CardHeader className="py-3 px-4 border-b border-gray-100">
+                    <div>
+                      <CardTitle className="text-sm font-bold text-gray-800">MRB/RI/NC Disposition Queue</CardTitle>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Focus: Quality hold type, MRB/RI/NC reference, aging, disposition owner, recovery ETA</p>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="max-h-[450px] overflow-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 sticky top-0">
+                          <tr className="border-b border-gray-200">
+                            <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Program/CLIN</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Hold Type</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">MRB/RI/NC Ref</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Status</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">
+                              <Tooltip>
+                                <TooltipTrigger className="flex items-center gap-1">Aging <Info className="w-3 h-3" /></TooltipTrigger>
+                                <TooltipContent className="text-xs">Days on protect list</TooltipContent>
+                              </Tooltip>
+                            </th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Disposition Owner</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Recovery ETA</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {filteredJobs.filter(j => j.blockingFunction === "Quality/MRB" || j.linkedMRB || j.linkedNC || j.linkedRI).slice(0, 25).map((job) => {
+                            const holdType = job.linkedMRB ? "MRB" : job.linkedNC ? "NC" : job.linkedRI ? "RI" : "Quality"
+                            const holdRef = job.linkedMRB || job.linkedNC || job.linkedRI || "-"
+                            const holdStatus = job.mrbStatus || job.ncStatus || job.riStatus || "Pending"
+                            
+                            return (
+                              <tr key={job.id} className={`hover:bg-blue-50 cursor-pointer ${job.daysOnProtectList > 10 ? "bg-red-50/30" : ""}`} onClick={() => handleSelectJob(job)}>
+                                <td className="p-2 font-mono text-blue-600">{job.id}</td>
+                                <td className="p-2 text-gray-700">
+                                  <div className="text-[10px]">{job.program.split(" ")[0]}</div>
+                                  <div className="text-blue-600 text-[9px]">{job.clin}</div>
+                                </td>
+                                <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
+                                <td className="p-2">
+                                  <Badge className={`text-[9px] ${holdType === "MRB" ? "bg-pink-100 text-pink-700" : holdType === "NC" ? "bg-red-100 text-red-700" : holdType === "RI" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600"}`}>
+                                    {holdType}
+                                  </Badge>
+                                </td>
+                                <td className="p-2 font-mono text-blue-600 text-[10px]">{holdRef}</td>
+                                <td className="p-2">
+                                  <Badge variant="outline" className="text-[9px]">{holdStatus}</Badge>
+                                </td>
+                                <td className={`p-2 text-center font-semibold ${job.daysOnProtectList > 10 ? "text-red-600" : job.daysOnProtectList > 5 ? "text-amber-600" : "text-gray-600"}`}>
+                                  {job.daysOnProtectList}d
+                                </td>
+                                <td className="p-2 text-gray-600 text-[10px]">{job.owner}</td>
+                                <td className="p-2 text-gray-600 max-w-[130px] truncate" title={job.nextAction}>{job.nextAction}</td>
+                                <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             )}
             
             {/* PDM/Program View */}
             {workbenchRole === "pdm-program" && (
-              <Card className="border border-gray-200">
-                <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">PDM / Program: CLIN & Milestone Risk View</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="max-h-[500px] overflow-auto">
-                    <table className="w-full text-xs">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr className="border-b border-gray-200">
-                          <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Program</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">CLIN</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Customer</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">DPAS</th>
-                          <th className="text-right p-2 font-semibold text-gray-700">Revenue Impact</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Days Late</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Recovery ETA</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {filteredJobs.filter(j => j.dpasFlag || j.criticalContract).slice(0, 20).map((job) => (
-                          <tr key={job.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectJob(job)}>
-                            <td className="p-2 font-mono text-blue-600">{job.id}</td>
-                            <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
-                            <td className="p-2 font-medium text-gray-900">{job.program}</td>
-                            <td className="p-2 text-blue-600">{job.clin}</td>
-                            <td className="p-2 text-gray-700">{job.customer}</td>
-                            <td className="p-2 text-center">
-                              {job.dpasFlag && <Badge className="text-[8px] bg-red-100 text-red-700">DPAS</Badge>}
-                            </td>
-                            <td className="p-2 text-right font-medium text-gray-700">{formatCurrency(job.revenueImpact)}</td>
-                            <td className={`p-2 text-center font-semibold ${job.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                              {job.status === "Late" ? `+${getDaysLateForBaseline(job)}` : getDaysLateForBaseline(job)}
-                            </td>
-                            <td className="p-2 text-gray-600">{formatDate(job.recoveryETA)}</td>
+              <div className="space-y-4">
+                {/* Key Metrics for PDM/Program */}
+                <div className="grid grid-cols-4 gap-4">
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">DPAS-Rated Jobs</div>
+                    <div className="text-xl font-bold text-red-600">{filteredJobs.filter(j => j.dpasFlag).length}</div>
+                    <div className="text-[10px] text-gray-500">government priority</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Revenue at Risk</div>
+                    <div className="text-xl font-bold text-gray-900">{formatCurrency(filteredJobs.reduce((sum, j) => sum + j.revenueImpact, 0))}</div>
+                    <div className="text-[10px] text-gray-500">total exposure</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Escalation Needed</div>
+                    <div className="text-xl font-bold text-amber-600">{filteredJobs.filter(j => j.escalationNeeded).length}</div>
+                    <div className="text-[10px] text-gray-500">require leadership attention</div>
+                  </Card>
+                  <Card className="border border-gray-200 p-3">
+                    <div className="text-[10px] text-gray-500 uppercase">Critical Path Jobs</div>
+                    <div className="text-xl font-bold text-purple-600">{filteredJobs.filter(j => j.criticalPath).length}</div>
+                    <div className="text-[10px] text-gray-500">on critical path</div>
+                  </Card>
+                </div>
+                
+                <Card className="border border-gray-200">
+                  <CardHeader className="py-3 px-4 border-b border-gray-100">
+                    <div>
+                      <CardTitle className="text-sm font-bold text-gray-800">CLIN & Milestone Risk View</CardTitle>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Focus: CLIN/milestone risk, customer visibility, DPAS flags, revenue/AOP impact, escalation needs</p>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="max-h-[450px] overflow-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 sticky top-0">
+                          <tr className="border-b border-gray-200">
+                            <th className="text-left p-2 font-semibold text-gray-700">Program</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">CLIN</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Required Date</th>
+                            <th className="text-left p-2 font-semibold text-gray-700">Blocker</th>
+                            <th className="text-right p-2 font-semibold text-gray-700">Revenue Impact</th>
+                            <th className="text-right p-2 font-semibold text-gray-700">AOP Impact</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">Customer/DPAS</th>
+                            <th className="text-center p-2 font-semibold text-gray-700">
+                              <Tooltip>
+                                <TooltipTrigger className="flex items-center gap-1">Recovery <Info className="w-3 h-3" /></TooltipTrigger>
+                                <TooltipContent className="text-xs">Recovery confidence based on current status</TooltipContent>
+                              </Tooltip>
+                            </th>
+                            <th className="text-center p-2 font-semibold text-gray-700">Escalation</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {filteredJobs.filter(j => j.dpasFlag || j.criticalContract || j.priorityTier === "Critical").slice(0, 25).map((job) => {
+                            // Calculate recovery confidence for job
+                            const daysRemaining = job.status === "Late" ? 0 : job.daysToLateRisk
+                            const hasBlocker = job.actionStatus === "Waiting" || job.actionStatus === "Open"
+                            const recoveryConf = daysRemaining > 10 && !hasBlocker ? "High" : daysRemaining > 5 || !hasBlocker ? "Medium" : "Low"
+                            
+                            return (
+                              <tr key={job.id} className={`hover:bg-blue-50 cursor-pointer ${job.escalationNeeded ? "bg-red-50/30" : ""}`} onClick={() => handleSelectJob(job)}>
+                                <td className="p-2 font-medium text-gray-900">{job.program}</td>
+                                <td className="p-2 text-blue-600">{job.clin}</td>
+                                <td className="p-2 font-mono text-blue-600 text-[10px]">{job.id}</td>
+                                <td className="p-2 text-center"><PriorityBadge tier={job.priorityTier} /></td>
+                                <td className="p-2 text-gray-600">{formatDate(job.requiredDate)}</td>
+                                <td className="p-2">
+                                  <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[job.primaryCause], color: ROOT_CAUSE_COLORS[job.primaryCause] }}>
+                                    {job.primaryCause}
+                                  </Badge>
+                                </td>
+                                <td className="p-2 text-right font-medium text-gray-700">{formatCurrency(job.revenueImpact)}</td>
+                                <td className="p-2 text-right font-medium text-gray-600">{formatCurrency(job.aopImpact)}</td>
+                                <td className="p-2 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <span className="text-[9px] text-gray-600">{job.customer}</span>
+                                    {job.dpasFlag && <Badge className="text-[7px] bg-red-100 text-red-700">DPAS</Badge>}
+                                  </div>
+                                </td>
+                                <td className="p-2 text-center">
+                                  <Badge className={`text-[9px] ${recoveryConf === "High" ? "bg-green-100 text-green-700" : recoveryConf === "Medium" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
+                                    {recoveryConf}
+                                  </Badge>
+                                </td>
+                                <td className="p-2 text-center">
+                                  {job.escalationNeeded ? (
+                                    <Badge className="text-[8px] bg-red-100 text-red-700">Needed</Badge>
+                                  ) : (
+                                    <span className="text-gray-400">-</span>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             )}
           </div>
         )}
@@ -2045,15 +2479,22 @@ export function LateJobTracking() {
       
       {/* Job Detail Drawer */}
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
-        <SheetContent className="w-[550px] sm:max-w-[550px] overflow-y-auto">
+        <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
           {selectedJob && (
             <>
               <SheetHeader className="pb-4 border-b border-gray-200">
                 <SheetTitle className="text-lg font-bold text-gray-900 flex items-center gap-2">
                   {selectedJob.id}
                   <PriorityBadge tier={selectedJob.priorityTier} score={selectedJob.priorityScore} />
+                  <StatusBadge status={selectedJob.status} />
                 </SheetTitle>
                 <p className="text-sm text-gray-500">{selectedJob.program} • {selectedJob.clin}</p>
+                {/* Why Prioritized? */}
+                <div className="mt-2 p-2 bg-blue-50 rounded border border-blue-200">
+                  <p className="text-xs text-blue-800">
+                    <strong>Why prioritized:</strong> {selectedJob.priorityExplanation}
+                  </p>
+                </div>
               </SheetHeader>
               
               <div className="mt-4 space-y-4">
@@ -2066,9 +2507,9 @@ export function LateJobTracking() {
                       <StatusBadge status={selectedJob.status} />
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">Days Late</p>
+                      <p className="text-xs text-gray-500">{selectedJob.status === "Late" ? "Days Late" : "Days to Risk"}</p>
                       <p className={`font-semibold ${selectedJob.status === "Late" ? "text-red-600" : "text-amber-600"}`}>
-                        {selectedJob.status === "Late" ? `+${selectedJob.daysLateContract}` : selectedJob.daysLateContract}
+                        {selectedJob.status === "Late" ? `+${selectedJob.daysLate} days missed` : `${selectedJob.daysToLateRisk} days until predicted miss`}
                       </p>
                     </div>
                     <div>
@@ -2088,41 +2529,44 @@ export function LateJobTracking() {
                       <p className="font-medium">{selectedJob.owner}</p>
                     </div>
                   </div>
-                  {selectedJob.dpasFlag && (
-                    <Badge className="mt-2 bg-red-100 text-red-700">DPAS Rated Contract</Badge>
-                  )}
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {selectedJob.dpasFlag && <Badge className="bg-red-100 text-red-700">DPAS Rated</Badge>}
+                    {selectedJob.criticalContract && <Badge className="bg-purple-100 text-purple-700">Critical Contract</Badge>}
+                    {selectedJob.criticalPath && <Badge className="bg-blue-100 text-blue-700">Critical Path</Badge>}
+                  </div>
                 </div>
                 
                 {/* Priority Decomposition */}
                 <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                  <p className="text-xs font-bold text-blue-700 mb-3">PRIORITY SCORE DECOMPOSITION</p>
+                  <p className="text-xs font-bold text-blue-700 mb-2">PRIORITY SCORE DECOMPOSITION</p>
+                  <p className="text-[10px] text-blue-600 mb-3">This job ranks #{selectedJob.rank} because of: <strong>{selectedJob.priorityFactors.clinCriticality > 15 ? "CLIN criticality" : ""}{selectedJob.priorityFactors.revenueAOP > 15 ? ", revenue/AOP impact" : ""}{selectedJob.priorityFactors.dueWindowUrgency > 15 ? ", due window urgency" : ""}</strong></p>
                   <PriorityDecomposition factors={selectedJob.priorityFactors} />
                 </div>
                 
                 {/* Baselines & Dates */}
                 <div className="p-4 bg-gray-50 rounded-lg">
-                  <p className="text-xs font-bold text-gray-600 mb-3">BASELINES & DATES</p>
+                  <p className="text-xs font-bold text-gray-600 mb-3">BASELINES & DATES (Selected: {selectedBaseline})</p>
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Contract/CLIN Date</span>
+                    <div className={`flex justify-between p-1.5 rounded ${selectedBaseline === "contract" ? "bg-blue-100" : ""}`}>
+                      <span className="text-gray-500">Contract/CLIN Date {selectedBaseline === "contract" && <Badge className="text-[8px] bg-blue-600 text-white ml-1">Selected</Badge>}</span>
                       <span className={`font-medium ${selectedJob.daysLateContract > 0 ? "text-red-600" : "text-gray-700"}`}>
                         {formatDate(selectedJob.requiredDate)} ({selectedJob.daysLateContract > 0 ? "+" : ""}{selectedJob.daysLateContract}d)
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">IOP/ESD</span>
+                    <div className={`flex justify-between p-1.5 rounded ${selectedBaseline === "iop" ? "bg-blue-100" : ""}`}>
+                      <span className="text-gray-500">IOP/ESD {selectedBaseline === "iop" && <Badge className="text-[8px] bg-blue-600 text-white ml-1">Selected</Badge>}</span>
                       <span className={`font-medium ${selectedJob.daysLateIOP > 0 ? "text-red-600" : "text-gray-700"}`}>
                         ({selectedJob.daysLateIOP > 0 ? "+" : ""}{selectedJob.daysLateIOP}d)
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Delivery Plan</span>
+                    <div className={`flex justify-between p-1.5 rounded ${selectedBaseline === "delivery-plan" ? "bg-blue-100" : ""}`}>
+                      <span className="text-gray-500">Delivery Plan {selectedBaseline === "delivery-plan" && <Badge className="text-[8px] bg-blue-600 text-white ml-1">Selected</Badge>}</span>
                       <span className={`font-medium ${selectedJob.daysLateDeliveryPlan > 0 ? "text-red-600" : "text-gray-700"}`}>
                         ({selectedJob.daysLateDeliveryPlan > 0 ? "+" : ""}{selectedJob.daysLateDeliveryPlan}d)
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">PDM Forecast</span>
+                    <div className={`flex justify-between p-1.5 rounded ${selectedBaseline === "pdm-forecast" ? "bg-blue-100" : ""}`}>
+                      <span className="text-gray-500">PDM Forecast {selectedBaseline === "pdm-forecast" && <Badge className="text-[8px] bg-blue-600 text-white ml-1">Selected</Badge>}</span>
                       <span className={`font-medium ${selectedJob.daysLatePDM > 0 ? "text-red-600" : "text-gray-700"}`}>
                         ({selectedJob.daysLatePDM > 0 ? "+" : ""}{selectedJob.daysLatePDM}d)
                       </span>
@@ -2131,10 +2575,17 @@ export function LateJobTracking() {
                       <span className="text-gray-700 font-medium">Predicted Completion</span>
                       <span className="font-semibold">{formatDate(selectedJob.predictedCompletion)}</span>
                     </div>
+                    {selectedJob.status === "Forecast-Late" && (
+                      <div className="p-2 bg-amber-50 rounded mt-2">
+                        <p className="text-xs text-amber-800">
+                          <strong>Predicted to miss {selectedBaseline === "contract" ? "Contract/CLIN" : selectedBaseline} date by {selectedJob.daysToLateRisk} days</strong>
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
                 
-                {/* Root Cause Evidence */}
+                {/* Root Cause Evidence - Enhanced */}
                 <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
                   <p className="text-xs font-bold text-amber-700 mb-3">ROOT CAUSE EVIDENCE</p>
                   <div className="space-y-2 text-sm">
@@ -2149,17 +2600,60 @@ export function LateJobTracking() {
                       <span className="text-gray-600">Blocking Function:</span>
                       <span className="font-medium">{selectedJob.blockingFunction}</span>
                     </div>
-                    {(selectedJob.linkedPO || selectedJob.linkedMRB || selectedJob.linkedNC || selectedJob.linkedRI) && (
-                      <div className="pt-2 border-t border-amber-200">
-                        <p className="text-xs text-amber-700 font-medium mb-1">Linked Evidence:</p>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedJob.linkedPO && <Badge variant="outline" className="text-xs">{selectedJob.linkedPO}</Badge>}
-                          {selectedJob.linkedMRB && <Badge variant="outline" className="text-xs">{selectedJob.linkedMRB}</Badge>}
-                          {selectedJob.linkedNC && <Badge variant="outline" className="text-xs">{selectedJob.linkedNC}</Badge>}
-                          {selectedJob.linkedRI && <Badge variant="outline" className="text-xs">{selectedJob.linkedRI}</Badge>}
-                        </div>
+                    {/* Evidence with types */}
+                    <div className="pt-2 border-t border-amber-200">
+                      <p className="text-xs text-amber-700 font-medium mb-2">Linked Evidence References:</p>
+                      <div className="space-y-1">
+                        {selectedJob.linkedPO && (
+                          <div className="flex items-center gap-2">
+                            <Badge className="text-[9px] bg-purple-100 text-purple-700">PO</Badge>
+                            <span className="font-mono text-blue-600 text-xs">{selectedJob.linkedPO}</span>
+                            {selectedJob.poPromiseDate && <span className="text-[10px] text-gray-500">Promise: {formatDate(selectedJob.poPromiseDate)}</span>}
+                          </div>
+                        )}
+                        {selectedJob.linkedMRB && (
+                          <div className="flex items-center gap-2">
+                            <Badge className="text-[9px] bg-pink-100 text-pink-700">MRB</Badge>
+                            <span className="font-mono text-blue-600 text-xs">{selectedJob.linkedMRB}</span>
+                            {selectedJob.mrbStatus && <span className="text-[10px] text-gray-500">{selectedJob.mrbStatus}</span>}
+                          </div>
+                        )}
+                        {selectedJob.linkedNC && (
+                          <div className="flex items-center gap-2">
+                            <Badge className="text-[9px] bg-red-100 text-red-700">NC</Badge>
+                            <span className="font-mono text-blue-600 text-xs">{selectedJob.linkedNC}</span>
+                            {selectedJob.ncStatus && <span className="text-[10px] text-gray-500">{selectedJob.ncStatus}</span>}
+                          </div>
+                        )}
+                        {selectedJob.linkedRI && (
+                          <div className="flex items-center gap-2">
+                            <Badge className="text-[9px] bg-purple-100 text-purple-700">RI</Badge>
+                            <span className="font-mono text-blue-600 text-xs">{selectedJob.linkedRI}</span>
+                            {selectedJob.riStatus && <span className="text-[10px] text-gray-500">{selectedJob.riStatus}</span>}
+                          </div>
+                        )}
+                        {selectedJob.linkedRouting && (
+                          <div className="flex items-center gap-2">
+                            <Badge className="text-[9px] bg-cyan-100 text-cyan-700">Routing</Badge>
+                            <span className="font-mono text-blue-600 text-xs">{selectedJob.linkedRouting}</span>
+                            {selectedJob.routingStatus && <span className="text-[10px] text-gray-500">{selectedJob.routingStatus}</span>}
+                          </div>
+                        )}
+                        {selectedJob.linkedCapacity && (
+                          <div className="flex items-center gap-2">
+                            <Badge className="text-[9px] bg-orange-100 text-orange-700">Capacity</Badge>
+                            <span className="text-xs">{selectedJob.linkedCapacity}</span>
+                            {selectedJob.capacityQueue && <span className="text-[10px] text-gray-500">Queue: {selectedJob.capacityQueue} jobs</span>}
+                          </div>
+                        )}
+                        {!selectedJob.linkedPO && !selectedJob.linkedMRB && !selectedJob.linkedNC && !selectedJob.linkedRI && !selectedJob.linkedRouting && !selectedJob.linkedCapacity && (
+                          <p className="text-[10px] text-gray-500 italic">No linked evidence objects</p>
+                        )}
                       </div>
-                    )}
+                    </div>
+                    <div className="flex justify-between text-[10px] text-gray-500 pt-1">
+                      <span>Last evidence update: {selectedJob.lastUpdated.toLocaleString()}</span>
+                    </div>
                   </div>
                 </div>
                 
@@ -2182,28 +2676,115 @@ export function LateJobTracking() {
                       </Badge>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">Fan-Out</p>
-                      <p className="font-medium">{selectedJob.fanOut} downstream assemblies</p>
+                      <p className="text-xs text-gray-500">DPAS / Critical Contract</p>
+                      <div className="flex gap-1">
+                        {selectedJob.dpasFlag && <Badge className="text-[9px] bg-red-100 text-red-700">DPAS</Badge>}
+                        {selectedJob.criticalContract && <Badge className="text-[9px] bg-purple-100 text-purple-700">Critical</Badge>}
+                        {!selectedJob.dpasFlag && !selectedJob.criticalContract && <span className="text-gray-500">-</span>}
+                      </div>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-xs text-gray-500">Downstream Impact</p>
+                      <p className="font-medium">{selectedJob.fanOut} downstream assemblies / ship commitments linked</p>
                     </div>
                   </div>
                 </div>
                 
-                {/* Actions & Recovery */}
+                {/* Actions & Recovery - Enhanced */}
                 <div className="p-4 bg-green-50 rounded-lg border border-green-200">
                   <p className="text-xs font-bold text-green-700 mb-3">ACTIONS & RECOVERY</p>
-                  <div className="space-y-2 text-sm">
+                  <div className="space-y-3 text-sm">
                     <div>
                       <p className="text-xs text-gray-500">Next Action</p>
                       <p className="font-medium text-gray-900">{selectedJob.nextAction}</p>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Recovery ETA:</span>
-                      <span className="font-semibold">{formatDate(selectedJob.recoveryETA)}</span>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs text-gray-500">Action Status</p>
+                        <Badge className={`text-[10px] ${
+                          selectedJob.actionStatus === "Open" ? "bg-gray-100 text-gray-600" :
+                          selectedJob.actionStatus === "In Progress" ? "bg-blue-100 text-blue-700" :
+                          selectedJob.actionStatus === "Waiting" ? "bg-amber-100 text-amber-700" :
+                          selectedJob.actionStatus === "Escalated" ? "bg-red-100 text-red-700" :
+                          "bg-green-100 text-green-700"
+                        }`}>
+                          {selectedJob.actionStatus}
+                        </Badge>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Escalation Path</p>
+                        {selectedJob.escalationNeeded ? (
+                          <Badge className="text-[10px] bg-red-100 text-red-700">Escalation Needed</Badge>
+                        ) : (
+                          <span className="text-gray-500">Standard</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Last Updated:</span>
-                      <span>{selectedJob.lastUpdated.toLocaleString()}</span>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs text-gray-500">Recovery ETA</p>
+                        <p className="font-semibold">{formatDate(selectedJob.recoveryETA)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Days on Protect List</p>
+                        <p className={`font-semibold ${selectedJob.daysOnProtectList > 10 ? "text-red-600" : selectedJob.daysOnProtectList > 5 ? "text-amber-600" : "text-gray-700"}`}>
+                          {selectedJob.daysOnProtectList} days (since {formatDate(selectedJob.protectListEntryDate)})
+                        </p>
+                      </div>
                     </div>
+                    <div className="pt-2 border-t border-green-200">
+                      <p className="text-xs text-gray-500">Last Owner Update</p>
+                      <p className="text-sm">{selectedJob.lastOwnerUpdate.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Linked Objects */}
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs font-bold text-gray-600 mb-3">LINKED OBJECTS</p>
+                  <div className="grid grid-cols-3 gap-2 text-[10px]">
+                    {selectedJob.linkedPO && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">PO:</span>
+                        <span className="font-mono text-blue-600 ml-1">{selectedJob.linkedPO}</span>
+                      </div>
+                    )}
+                    {selectedJob.linkedMRB && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">MRB:</span>
+                        <span className="font-mono text-blue-600 ml-1">{selectedJob.linkedMRB}</span>
+                      </div>
+                    )}
+                    {selectedJob.linkedNC && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">NC:</span>
+                        <span className="font-mono text-blue-600 ml-1">{selectedJob.linkedNC}</span>
+                      </div>
+                    )}
+                    {selectedJob.linkedRI && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">RI:</span>
+                        <span className="font-mono text-blue-600 ml-1">{selectedJob.linkedRI}</span>
+                      </div>
+                    )}
+                    {selectedJob.linkedRouting && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">Routing:</span>
+                        <span className="font-mono text-blue-600 ml-1">{selectedJob.linkedRouting}</span>
+                      </div>
+                    )}
+                    {selectedJob.workcenter && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">Workcenter:</span>
+                        <span className="ml-1">{selectedJob.workcenter}</span>
+                      </div>
+                    )}
+                    {selectedJob.supplierPromiseDate && (
+                      <div className="p-2 bg-white rounded border">
+                        <span className="text-gray-500">Supplier:</span>
+                        <span className="ml-1">{formatDate(selectedJob.supplierPromiseDate)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
