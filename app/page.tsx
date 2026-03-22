@@ -33,6 +33,7 @@ import { OTDTracking } from "@/components/tabs/otd-tracking"
 import { ShelfLifeTracking } from "@/components/tabs/shelf-life-tracking"
 import { MaterialLineOfBalance } from "@/components/tabs/material-line-of-balance"
 import { CBOMLifecycle } from "@/components/tabs/cbom-lifecycle"
+import { LateJobTracking } from "@/components/tabs/late-job-tracking"
 
 export type TabId =
   | "standard-cost"
@@ -65,6 +66,7 @@ export type TabId =
   | "shelf-life"
   | "material-lob"
   | "cbom-lifecycle"
+  | "late-job-tracking"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -117,6 +119,7 @@ export default function Home() {
           {activeTab === "shelf-life" && <ShelfLifeTracking />}
         {activeTab === "material-lob" && <MaterialLineOfBalance />}
           {activeTab === "cbom-lifecycle" && <CBOMLifecycle />}
+          {activeTab === "late-job-tracking" && <LateJobTracking />}
         </main>
       </div>
     </div>

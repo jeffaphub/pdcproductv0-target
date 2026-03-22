@@ -57,6 +57,7 @@ const sections: SidebarSection[] = [
       { id: "shelf-life", label: "Part Shelf-Life Tracking" },
       { id: "material-lob", label: "Material Line of Balance" },
       { id: "cbom-lifecycle", label: "CBOM - BOM Lifecycle" },
+      { id: "late-job-tracking", label: "Late Part Tracking" },
     ],
   },
 ]
