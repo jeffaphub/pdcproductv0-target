@@ -648,14 +648,53 @@ export function LateJobTracking() {
       .sort((a, b) => b.count - a.count)
   }, [filteredJobs])
   
-  // Trend data
+  // Helper to generate week ending date labels
+  const getWeekEndingDate = (weeksAgo: number): string => {
+    const now = new Date()
+    const target = new Date(now.getTime() - weeksAgo * 7 * 24 * 60 * 60 * 1000)
+    // Find next Sunday (end of week)
+    const dayOfWeek = target.getDay()
+    const daysUntilSunday = (7 - dayOfWeek) % 7
+    target.setDate(target.getDate() + daysUntilSunday)
+    return `${target.getMonth() + 1}/${target.getDate()}`
+  }
+  
+  // Trend data with real weekly labels
   const trendData = useMemo(() => {
-    return Array.from({ length: 12 }, (_, i) => ({
-      week: `W${i + 1}`,
-      late: Math.floor(seededRandom(i * 31) * 30) + 40,
-      forecastLate: Math.floor(seededRandom(i * 47) * 25) + 20,
-      highPriority: Math.floor(seededRandom(i * 59) * 20) + 15
-    }))
+    return Array.from({ length: 12 }, (_, i) => {
+      const weeksAgo = 11 - i // So index 0 = 11 weeks ago, index 11 = this week
+      const weekLabel = getWeekEndingDate(weeksAgo)
+      return {
+        week: weekLabel,
+        weekFull: `Week ending ${weekLabel}`,
+        late: Math.floor(seededRandom(i * 31) * 30) + 40,
+        forecastLate: Math.floor(seededRandom(i * 47) * 25) + 20,
+        criticalHighPriority: Math.floor(seededRandom(i * 59) * 20) + 15 // Critical + High tier jobs
+      }
+    })
+  }, [])
+  
+  // Weighted root cause mix data (weighted by priority score and revenue impact)
+  const weightedRootCauseData = useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+      const weekLabel = getWeekEndingDate(11 - i)
+      // Weighted exposure = count * avg priority score * avg revenue factor
+      const supplyWeight = (Math.floor(seededRandom(i * 71) * 20) + 10) * (60 + seededRandom(i * 72) * 30) * (0.8 + seededRandom(i * 73) * 0.4)
+      const qualityWeight = (Math.floor(seededRandom(i * 83) * 15) + 5) * (55 + seededRandom(i * 84) * 35) * (0.7 + seededRandom(i * 85) * 0.5)
+      const capacityWeight = (Math.floor(seededRandom(i * 97) * 12) + 3) * (50 + seededRandom(i * 98) * 30) * (0.6 + seededRandom(i * 99) * 0.4)
+      const dataWeight = (Math.floor(seededRandom(i * 101) * 6) + 2) * (40 + seededRandom(i * 102) * 25) * (0.5 + seededRandom(i * 103) * 0.3)
+      const otherWeight = (Math.floor(seededRandom(i * 111) * 4) + 1) * (35 + seededRandom(i * 112) * 20) * (0.4 + seededRandom(i * 113) * 0.3)
+      
+      return {
+        week: weekLabel,
+        weekFull: `Week ending ${weekLabel}`,
+        supply: Math.round(supplyWeight / 100), // Normalize to reasonable scale
+        qualityMrb: Math.round(qualityWeight / 100),
+        capacityTest: Math.round(capacityWeight / 100),
+        dataPlanning: Math.round(dataWeight / 100),
+        other: Math.round(otherWeight / 100)
+      }
+    })
   }, [])
   
   const handleSelectJob = (job: LateJob) => {
@@ -1746,49 +1785,103 @@ export function LateJobTracking() {
         {activeTab === "trends" && (
           <div className="space-y-6">
             <div className="grid grid-cols-2 gap-6">
-              {/* Late/Forecast-Late Trend */}
+              {/* Weekly Late Job Trend */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Late / Forecast-Late Trend</CardTitle>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Weekly Late Job Trend</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Weekly count of late jobs, forecast-late jobs, and top-tier prioritized jobs in the selected scope.
+                    </p>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
                   <ResponsiveContainer width="100%" height={250}>
                     <LineChart data={trendData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="week" tick={{ fontSize: 10 }} />
-                      <YAxis tick={{ fontSize: 10 }} />
-                      <RechartsTooltip />
-                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      <XAxis dataKey="week" tick={{ fontSize: 9 }} label={{ value: "Week Ending", position: "bottom", fontSize: 9, offset: -5 }} />
+                      <YAxis tick={{ fontSize: 10 }} label={{ value: "Job Count", angle: -90, position: "insideLeft", fontSize: 9 }} />
+                      <RechartsTooltip 
+                        content={({ active, payload, label }) => {
+                          if (active && payload && payload.length) {
+                            return (
+                              <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
+                                <p className="font-semibold mb-1">Week ending {label}</p>
+                                {payload.map((entry, idx) => (
+                                  <p key={idx} style={{ color: entry.color }}>
+                                    {entry.name}: {entry.value}
+                                  </p>
+                                ))}
+                              </div>
+                            )
+                          }
+                          return null
+                        }}
+                      />
+                      <Legend 
+                        wrapperStyle={{ fontSize: 10 }} 
+                        formatter={(value) => {
+                          if (value === "Critical + High Priority") {
+                            return (
+                              <Tooltip>
+                                <TooltipTrigger className="underline decoration-dotted">
+                                  {value}
+                                </TooltipTrigger>
+                                <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                                  Jobs in the top priority tiers based on shared priority score.
+                                </TooltipContent>
+                              </Tooltip>
+                            )
+                          }
+                          return value
+                        }}
+                      />
                       <Line type="monotone" dataKey="late" stroke={COLORS.critical} strokeWidth={2} name="Late Jobs" dot={{ r: 3 }} />
-                      <Line type="monotone" dataKey="forecastLate" stroke={COLORS.high} strokeWidth={2} name="Forecast-Late" dot={{ r: 3 }} />
-                      <Line type="monotone" dataKey="highPriority" stroke={COLORS.primary} strokeWidth={2} name="High Priority" dot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="forecastLate" stroke={COLORS.high} strokeWidth={2} name="Forecast-Late Jobs" dot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="criticalHighPriority" stroke={COLORS.primary} strokeWidth={2} name="Critical + High Priority" dot={{ r: 3 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
               
-              {/* Root Cause Mix Over Time */}
+              {/* Weighted Root Cause Mix Over Time */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Root Cause Mix Over Time</CardTitle>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Weighted Root Cause Mix Over Time</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Weekly late-job exposure by primary blocker, weighted by priority score and business impact.
+                    </p>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
                   <ResponsiveContainer width="100%" height={250}>
-                    <AreaChart data={trendData.map((w, i) => ({
-                      ...w,
-                      supply: Math.floor(seededRandom(i * 71) * 20) + 10,
-                      quality: Math.floor(seededRandom(i * 83) * 15) + 5,
-                      capacity: Math.floor(seededRandom(i * 97) * 12) + 3,
-                      other: Math.floor(seededRandom(i * 101) * 8) + 2
-                    }))}>
+                    <AreaChart data={weightedRootCauseData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="week" tick={{ fontSize: 10 }} />
-                      <YAxis tick={{ fontSize: 10 }} />
-                      <RechartsTooltip />
+                      <XAxis dataKey="week" tick={{ fontSize: 9 }} label={{ value: "Week Ending", position: "bottom", fontSize: 9, offset: -5 }} />
+                      <YAxis tick={{ fontSize: 10 }} label={{ value: "Weighted Exposure", angle: -90, position: "insideLeft", fontSize: 9 }} />
+                      <RechartsTooltip 
+                        content={({ active, payload, label }) => {
+                          if (active && payload && payload.length) {
+                            return (
+                              <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
+                                <p className="font-semibold mb-1">Week ending {label}</p>
+                                {payload.map((entry, idx) => (
+                                  <p key={idx} style={{ color: entry.color }}>
+                                    {entry.name}: {entry.value} exposure units
+                                  </p>
+                                ))}
+                              </div>
+                            )
+                          }
+                          return null
+                        }}
+                      />
                       <Legend wrapperStyle={{ fontSize: 10 }} />
                       <Area type="monotone" dataKey="supply" stackId="1" stroke={COLORS.supply} fill={COLORS.supply} name="Supply" />
-                      <Area type="monotone" dataKey="quality" stackId="1" stroke={COLORS.quality} fill={COLORS.quality} name="Quality/MRB" />
-                      <Area type="monotone" dataKey="capacity" stackId="1" stroke={COLORS.capacity} fill={COLORS.capacity} name="Capacity" />
+                      <Area type="monotone" dataKey="qualityMrb" stackId="1" stroke={COLORS.quality} fill={COLORS.quality} name="Quality/MRB" />
+                      <Area type="monotone" dataKey="capacityTest" stackId="1" stroke={COLORS.capacity} fill={COLORS.capacity} name="Capacity/Test" />
+                      <Area type="monotone" dataKey="dataPlanning" stackId="1" stroke="#8b5cf6" fill="#8b5cf6" name="Data/Planning" />
                       <Area type="monotone" dataKey="other" stackId="1" stroke={COLORS.low} fill={COLORS.low} name="Other" />
                     </AreaChart>
                   </ResponsiveContainer>
@@ -1796,33 +1889,153 @@ export function LateJobTracking() {
               </Card>
             </div>
             
-            {/* Governance Board */}
+            {/* Governance Board with Tooltips */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
                 <CardTitle className="text-sm font-bold text-gray-800">Governance Board</CardTitle>
               </CardHeader>
               <CardContent className="p-4">
                 <div className="grid grid-cols-5 gap-4">
-                  <div className="p-4 bg-blue-50 rounded-lg border border-blue-200 text-center">
+                  <div className="p-4 bg-blue-50 rounded-lg border border-blue-200 text-center relative">
+                    <Tooltip>
+                      <TooltipTrigger className="absolute top-2 right-2">
+                        <Info className="w-3.5 h-3.5 text-blue-400 hover:text-blue-600" />
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                        Count of unique jobs that appeared on the prioritized protect list during the selected time window. Includes both Late and Forecast-Late jobs that met visibility thresholds.
+                      </TooltipContent>
+                    </Tooltip>
                     <p className="text-2xl font-bold text-blue-700">24</p>
                     <p className="text-xs text-blue-600 mt-1">Jobs entered protect list</p>
                   </div>
-                  <div className="p-4 bg-green-50 rounded-lg border border-green-200 text-center">
+                  <div className="p-4 bg-green-50 rounded-lg border border-green-200 text-center relative">
+                    <Tooltip>
+                      <TooltipTrigger className="absolute top-2 right-2">
+                        <Info className="w-3.5 h-3.5 text-green-400 hover:text-green-600" />
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                        Jobs that were on the protect list and subsequently completed on or before their required date after recovery actions were taken. Calculated as: Jobs completed on-time after being flagged as at-risk.
+                      </TooltipContent>
+                    </Tooltip>
                     <p className="text-2xl font-bold text-green-700">18</p>
                     <p className="text-xs text-green-600 mt-1">Jobs recovered</p>
                   </div>
-                  <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 text-center">
+                  <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 text-center relative">
+                    <Tooltip>
+                      <TooltipTrigger className="absolute top-2 right-2">
+                        <Info className="w-3.5 h-3.5 text-amber-400 hover:text-amber-600" />
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                        Jobs that required escalation to senior leadership, cross-functional tiger teams, or customer communication. Includes jobs moved to Critical tier or flagged for executive review.
+                      </TooltipContent>
+                    </Tooltip>
                     <p className="text-2xl font-bold text-amber-700">7</p>
                     <p className="text-xs text-amber-600 mt-1">Jobs escalated</p>
                   </div>
-                  <div className="p-4 bg-red-50 rounded-lg border border-red-200 text-center">
+                  <div className="p-4 bg-red-50 rounded-lg border border-red-200 text-center relative">
+                    <Tooltip>
+                      <TooltipTrigger className="absolute top-2 right-2">
+                        <Info className="w-3.5 h-3.5 text-red-400 hover:text-red-600" />
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                        Jobs that missed their required date despite being on the protect list. Calculated as: Jobs on protect list whose actual completion date exceeded required date. Used for closed-loop learning.
+                      </TooltipContent>
+                    </Tooltip>
                     <p className="text-2xl font-bold text-red-700">3</p>
                     <p className="text-xs text-red-600 mt-1">Jobs missed</p>
                   </div>
-                  <div className="p-4 bg-purple-50 rounded-lg border border-purple-200 text-center">
+                  <div className="p-4 bg-purple-50 rounded-lg border border-purple-200 text-center relative">
+                    <Tooltip>
+                      <TooltipTrigger className="absolute top-2 right-2">
+                        <Info className="w-3.5 h-3.5 text-purple-400 hover:text-purple-600" />
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                        Most frequent primary root cause category across all jobs on the protect list during the time window, weighted by priority score. Identifies systemic issues requiring process improvement.
+                      </TooltipContent>
+                    </Tooltip>
                     <p className="text-2xl font-bold text-purple-700">Supply</p>
                     <p className="text-xs text-purple-600 mt-1">Top recurring blocker</p>
                   </div>
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Closed-Loop Governance Table */}
+            <Card className="border border-gray-200">
+              <CardHeader className="py-3 px-4 border-b border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Closed-Loop Governance Review</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Historical analysis of jobs that transitioned through the protect list - what actions were taken and did they work?
+                    </p>
+                  </div>
+                  <Badge className="bg-purple-100 text-purple-700 text-[10px]">Process Improvement Input</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-auto max-h-[350px]">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr className="border-b border-gray-200">
+                        <th className="text-left p-2 font-semibold text-gray-700">Job ID</th>
+                        <th className="text-left p-2 font-semibold text-gray-700">Program</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">On List?</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Days Visible</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Priority Tier</th>
+                        <th className="text-left p-2 font-semibold text-gray-700">Primary Cause</th>
+                        <th className="text-left p-2 font-semibold text-gray-700">Recovery Action</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Outcome</th>
+                        <th className="text-left p-2 font-semibold text-gray-700">Lesson Learned</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {governanceRecords.map((record, idx) => (
+                        <tr key={idx} className={`hover:bg-gray-50 ${!record.actionWorked ? "bg-red-50/30" : record.wasOnProtectList ? "bg-green-50/30" : ""}`}>
+                          <td className="p-2 font-mono text-blue-600">{record.jobId}</td>
+                          <td className="p-2 text-gray-700">{record.program}</td>
+                          <td className="p-2 text-center">
+                            {record.wasOnProtectList ? (
+                              <Badge className="bg-green-100 text-green-700 text-[9px]">Yes</Badge>
+                            ) : (
+                              <Badge className="bg-gray-100 text-gray-600 text-[9px]">No</Badge>
+                            )}
+                          </td>
+                          <td className="p-2 text-center font-medium text-gray-700">
+                            {record.daysVisibleBeforeLate > 0 ? `${record.daysVisibleBeforeLate}d` : "-"}
+                          </td>
+                          <td className="p-2 text-center">
+                            <Badge className={`text-[9px] ${
+                              record.impactSeverity === "Critical" ? "bg-red-100 text-red-700" :
+                              record.impactSeverity === "High" ? "bg-amber-100 text-amber-700" :
+                              record.impactSeverity === "Medium" ? "bg-yellow-100 text-yellow-700" :
+                              "bg-gray-100 text-gray-600"
+                            }`}>
+                              {record.impactSeverity}
+                            </Badge>
+                          </td>
+                          <td className="p-2">
+                            <Badge variant="outline" className="text-[9px]" style={{ borderColor: ROOT_CAUSE_COLORS[record.rootCause], color: ROOT_CAUSE_COLORS[record.rootCause] }}>
+                              {record.rootCause}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-gray-700">{record.actionTaken}</td>
+                          <td className="p-2 text-center">
+                            {record.actionWorked ? (
+                              <Badge className="bg-green-100 text-green-700 text-[9px]">Recovered</Badge>
+                            ) : record.wasOnProtectList ? (
+                              <Badge className="bg-red-100 text-red-700 text-[9px]">Missed</Badge>
+                            ) : (
+                              <Badge className="bg-gray-100 text-gray-600 text-[9px]">Not Visible</Badge>
+                            )}
+                          </td>
+                          <td className="p-2 text-gray-600 max-w-[200px] truncate" title={record.lessonsLearned}>
+                            {record.lessonsLearned}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </CardContent>
             </Card>
