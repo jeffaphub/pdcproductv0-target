@@ -58,6 +58,7 @@ const sections: SidebarSection[] = [
       { id: "material-lob", label: "Material Line of Balance" },
       { id: "cbom-lifecycle", label: "CBOM - BOM Lifecycle" },
       { id: "late-job-tracking", label: "Late Part Tracking" },
+      { id: "shortage-critical-path", label: "Shortage & Critical Path Parts" },
     ],
   },
 ]

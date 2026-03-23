@@ -34,6 +34,7 @@ import { ShelfLifeTracking } from "@/components/tabs/shelf-life-tracking"
 import { MaterialLineOfBalance } from "@/components/tabs/material-line-of-balance"
 import { CBOMLifecycle } from "@/components/tabs/cbom-lifecycle"
 import { LateJobTracking } from "@/components/tabs/late-job-tracking"
+import { ShortageCriticalPath } from "@/components/tabs/shortage-critical-path"
 
 export type TabId =
   | "standard-cost"
@@ -67,6 +68,7 @@ export type TabId =
   | "material-lob"
   | "cbom-lifecycle"
   | "late-job-tracking"
+  | "shortage-critical-path"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -120,6 +122,7 @@ export default function Home() {
         {activeTab === "material-lob" && <MaterialLineOfBalance />}
           {activeTab === "cbom-lifecycle" && <CBOMLifecycle />}
           {activeTab === "late-job-tracking" && <LateJobTracking />}
+          {activeTab === "shortage-critical-path" && <ShortageCriticalPath />}
         </main>
       </div>
     </div>
