@@ -453,6 +453,23 @@ export function ShortageCriticalPath() {
   const [drillDownDriver, setDrillDownDriver] = useState<ShortageDriver | null>(null)
   const [criticalPathFilter, setCriticalPathFilter] = useState<"all" | "no-sub" | "long-lead" | "multi-pgm">("all")
   const [heatmapMetric, setHeatmapMetric] = useState<"shortage" | "jobs" | "demand">("shortage")
+  const [selectedMatrixDrivers, setSelectedMatrixDrivers] = useState<Set<ShortageDriver>>(new Set(["Supplier Slip", "Late PR/PO", "MRB Hold", "RI Queue", "Shelf-Life"]))
+  
+  // Toggle driver visibility in the matrix chart
+  const toggleMatrixDriver = (driver: ShortageDriver) => {
+    setSelectedMatrixDrivers(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(driver)) {
+        // Don't allow deselecting all - keep at least one
+        if (newSet.size > 1) {
+          newSet.delete(driver)
+        }
+      } else {
+        newSet.add(driver)
+      }
+      return newSet
+    })
+  }
   
   // Generate data
   const shortageParts = useMemo(() => generateShortageParts(), [])
@@ -522,18 +539,21 @@ export function ShortageCriticalPath() {
   
   // Impact matrix data - using Days to First Blocked Demand instead of Lead Time
   const impactMatrixData = useMemo(() => {
-    return filteredParts.slice(0, 40).map(p => ({
-      x: p.daysToFirstBlockedDemand,
-      y: p.priorityScore,
-      z: p.jobsBlocked * 5 + p.revenueAtRisk / 100000,
-      name: p.partNumber,
-      driver: p.primaryDriver,
-      tier: p.priorityTier,
-      leadTime: p.leadTimeDays,
-      clins: p.clinsBlocked,
-      jobs: p.jobsBlocked
-    }))
-  }, [filteredParts])
+    return filteredParts
+      .filter(p => selectedMatrixDrivers.has(p.primaryDriver))
+      .slice(0, 40)
+      .map(p => ({
+        x: p.daysToFirstBlockedDemand,
+        y: p.priorityScore,
+        z: p.jobsBlocked * 5 + p.revenueAtRisk / 100000,
+        name: p.partNumber,
+        driver: p.primaryDriver,
+        tier: p.priorityTier,
+        leadTime: p.leadTimeDays,
+        clins: p.clinsBlocked,
+        jobs: p.jobsBlocked
+      }))
+  }, [filteredParts, selectedMatrixDrivers])
   
   // Root cause data
   const rootCauseData = useMemo(() => {
@@ -869,13 +889,33 @@ export function ShortageCriticalPath() {
                   </ScatterChart>
                 </ResponsiveContainer>
                 <div className="flex flex-wrap justify-center gap-3 mt-2 text-[10px]">
-                  {Object.entries(DRIVER_COLORS).slice(0, 5).map(([driver, color]) => (
-                    <span key={driver} className="flex items-center gap-1">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
-                      {driver}
-                    </span>
-                  ))}
+                  {(["Supplier Slip", "Late PR/PO", "MRB Hold", "RI Queue", "Shelf-Life"] as ShortageDriver[]).map((driver) => {
+                    const isSelected = selectedMatrixDrivers.has(driver)
+                    return (
+                      <button
+                        key={driver}
+                        onClick={() => toggleMatrixDriver(driver)}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded-full transition-all cursor-pointer ${
+                          isSelected 
+                            ? "bg-gray-100 hover:bg-gray-200" 
+                            : "bg-gray-50 opacity-40 hover:opacity-60"
+                        }`}
+                      >
+                        <span 
+                          className="w-2.5 h-2.5 rounded-full transition-opacity" 
+                          style={{ 
+                            backgroundColor: DRIVER_COLORS[driver],
+                            opacity: isSelected ? 1 : 0.4
+                          }} 
+                        />
+                        <span className={isSelected ? "text-gray-700" : "text-gray-400 line-through"}>
+                          {driver}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
+                <p className="text-[9px] text-gray-400 text-center mt-1">Click legend items to filter</p>
               </CardContent>
             </Card>
             
