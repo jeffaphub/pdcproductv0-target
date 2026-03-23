@@ -229,13 +229,15 @@ const generateShortageParts = (): ShortagePart[] => {
     const weeklyBalance: number[] = []
     const weeklyBlockedJobs: number[] = []
     
-    let runningBalance = Math.floor(seededRandom(seed + 50) * 20)
+    // Start with varied initial balance - some parts start in shortage
+    let runningBalance = Math.floor(seededRandom(seed + 50) * 40) - 20
     for (let w = 0; w < 10; w++) {
-      const demand = Math.floor(seededRandom(seed + 60 + w) * 15)
-      const onHand = w === 0 ? Math.floor(seededRandom(seed + 200 + w) * 20) : 0
-      const wip = Math.floor(seededRandom(seed + 210 + w) * 8)
-      const openPO = Math.floor(seededRandom(seed + 220 + w) * 10)
-      const inTransit = Math.floor(seededRandom(seed + 230 + w) * 5)
+      // Higher demand to create more shortages
+      const demand = Math.floor(seededRandom(seed + 60 + w) * 20) + 5
+      const onHand = w === 0 ? Math.floor(seededRandom(seed + 200 + w) * 15) : 0
+      const wip = Math.floor(seededRandom(seed + 210 + w) * 6)
+      const openPO = Math.floor(seededRandom(seed + 220 + w) * 8)
+      const inTransit = Math.floor(seededRandom(seed + 230 + w) * 4)
       const riPending = Math.floor(seededRandom(seed + 240 + w) * 3)
       
       weeklyDemand.push(demand)
@@ -248,7 +250,7 @@ const generateShortageParts = (): ShortagePart[] => {
       const supply = onHand + wip + openPO + inTransit
       runningBalance = runningBalance - demand + supply
       weeklyBalance.push(runningBalance)
-      weeklyBlockedJobs.push(runningBalance < 0 ? Math.abs(Math.floor(runningBalance / 3)) : 0)
+      weeklyBlockedJobs.push(runningBalance < 0 ? Math.ceil(Math.abs(runningBalance) / 5) + 1 : 0)
     }
     
     const linkedProgramCount = Math.floor(seededRandom(seed + 80) * 3) + 1
@@ -1332,32 +1334,54 @@ export function ShortageCriticalPath() {
                       
                       if (heatmapMetric === "shortage") {
                         value = part.weeklyBalance[wIdx] || 0
-                        displayValue = value !== 0 ? String(value) : ""
+                        displayValue = String(Math.abs(value))
                       } else if (heatmapMetric === "jobs") {
                         value = part.weeklyBlockedJobs[wIdx] || 0
-                        displayValue = value > 0 ? String(value) : ""
+                        displayValue = String(value)
                       } else {
                         value = part.weeklyDemand[wIdx] || 0
-                        displayValue = value > 0 ? String(value) : ""
+                        displayValue = String(value)
                       }
                       
-                      const getSeverity = () => {
+                      // Determine severity for color coding
+                      // For shortage: negative values = shortage (bad), positive = covered (good)
+                      // For jobs/demand: higher values = worse
+                      const getSeverity = (): "high" | "medium" | "low" | "covered" => {
                         if (heatmapMetric === "shortage") {
-                          return value < -10 ? "high" : value < 0 ? "medium" : value < 5 ? "low" : "clear"
+                          // Negative balance = shortage
+                          if (value <= -20) return "high"      // High shortage (red)
+                          if (value < 0) return "medium"       // Some shortage (yellow)
+                          if (value < 10) return "low"         // Low buffer (green)
+                          return "covered"                     // Well covered (blue)
                         } else {
-                          return value >= 3 ? "high" : value >= 1 ? "medium" : value > 0 ? "low" : "clear"
+                          // For jobs/demand, higher = worse
+                          if (value >= 4) return "high"
+                          if (value >= 2) return "medium"
+                          if (value >= 1) return "low"
+                          return "covered"
                         }
                       }
                       
                       const severity = getSeverity()
+                      
+                      // Color mapping per legend: High=red, Medium=yellow, Low=green, Covered=blue
+                      const colorMap = {
+                        high: { bg: "#fee2e2", text: "#dc2626" },      // Red
+                        medium: { bg: "#fef3c7", text: "#d97706" },    // Yellow/Amber
+                        low: { bg: "#dcfce7", text: "#16a34a" },       // Green
+                        covered: { bg: "#dbeafe", text: "#2563eb" }    // Blue
+                      }
+                      
+                      const colors = colorMap[severity]
+                      
                       return (
                         <Tooltip key={`cell-${pIdx}-${wIdx}`}>
                           <TooltipTrigger asChild>
                             <div
-                              className="h-7 rounded flex items-center justify-center text-[10px] font-medium cursor-pointer hover:ring-2 hover:ring-blue-400"
+                              className="h-7 rounded flex items-center justify-center text-[10px] font-medium cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all"
                               style={{
-                                backgroundColor: severity === "high" ? "#fee2e2" : severity === "medium" ? "#fef3c7" : severity === "low" ? "#dbeafe" : "#f3f4f6",
-                                color: severity === "high" ? "#991b1b" : severity === "medium" ? "#92400e" : severity === "low" ? "#1e40af" : "#6b7280"
+                                backgroundColor: colors.bg,
+                                color: colors.text
                               }}
                             >
                               {displayValue}
