@@ -20,7 +20,7 @@ import {
   ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, 
   ResponsiveContainer, Cell, BarChart, Bar, LineChart, Line,
   AreaChart, Area, Legend, Tooltip as RechartsTooltip, PieChart, Pie,
-  ComposedChart
+  ComposedChart, ReferenceArea, ReferenceLine
 } from "recharts"
 
 // ===== TYPES =====
@@ -55,11 +55,17 @@ interface ShortagePart {
   riQty: number
   expiredQty: number
   holdQty: number
+  shelfLifeRisk: boolean
+  inTransitQty: number
+  wipDependentQty: number
   // Dates
   firstRequiredDate: Date
+  daysToFirstBlockedDemand: number
   shortWeek: string
+  shortWeekDate: Date
   riskWeek: string
   recoveryWeek: string
+  recoveryWeekDate: Date
   // Impact
   programsImpacted: number
   jobsBlocked: number
@@ -70,6 +76,11 @@ interface ShortagePart {
   linkedClins: string[]
   revenueAtRisk: number
   aopAtRisk: number
+  // RTW & Late Job integration
+  rtwBlocked: boolean
+  rtwBlockedJobs: number
+  linkedLateJobs: number
+  materialDrivenLateJobs: number
   // Driver & Action
   primaryDriver: ShortageDriver
   blockingFunction: BlockingFunction
@@ -87,6 +98,8 @@ interface ShortagePart {
   // Governance
   daysOnDashboard: number
   wasVisibleBeforeIncident: boolean
+  lessonLearned: string | null
+  rootCauseConfirmed: boolean
   // Priority factors
   priorityFactors: {
     blockedDemandCriticality: number
@@ -105,10 +118,15 @@ interface ShortagePart {
     mrbHold: number
     expired: number
   }
-  // Weekly demand/supply
+  // Weekly demand/supply - time-phased by source
   weeklyDemand: number[]
-  weeklySupply: number[]
+  weeklyOnHand: number[]
+  weeklyWIP: number[]
+  weeklyOpenPO: number[]
+  weeklyInTransit: number[]
+  weeklyRIPending: number[]
   weeklyBalance: number[]
+  weeklyBlockedJobs: number[]
 }
 
 // ===== COLORS =====
@@ -143,6 +161,14 @@ const formatDate = (date: Date) => {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
 }
 
+const formatWeekEnding = (weekOffset: number) => {
+  const date = new Date(Date.now() + weekOffset * 7 * 86400000)
+  // Get to next Sunday
+  const dayOfWeek = date.getDay()
+  date.setDate(date.getDate() + (7 - dayOfWeek) % 7)
+  return date.toLocaleDateString("en-US", { month: "numeric", day: "numeric" })
+}
+
 const formatCurrency = (value: number) => {
   if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`
   if (value >= 1000) return `$${(value / 1000).toFixed(0)}K`
@@ -161,6 +187,7 @@ const suppliers = ["Analog Devices", "Texas Instruments", "Amphenol", "Murata", 
 const sites = ["Camden", "Huntsville", "El Segundo", "San Diego"]
 const valueStreams = ["Production", "Integration", "Test", "Depot"]
 const customers = ["US Navy", "US Army", "US Air Force", "USMC", "International"]
+const lessonLearnedOptions = ["Inadequate safety stock", "Supplier capacity not validated", "Alternate source needed", "Earlier expedite required", "Data quality issue"]
 
 // ===== GENERATE DATA =====
 const generateShortageParts = (): ShortagePart[] => {
@@ -192,23 +219,44 @@ const generateShortageParts = (): ShortagePart[] => {
       "Contact supplier for AOG pull-in"
     ]
     
-    // Generate weekly data for 10 weeks
+    // Generate time-phased weekly data for 10 weeks
     const weeklyDemand: number[] = []
-    const weeklySupply: number[] = []
+    const weeklyOnHand: number[] = []
+    const weeklyWIP: number[] = []
+    const weeklyOpenPO: number[] = []
+    const weeklyInTransit: number[] = []
+    const weeklyRIPending: number[] = []
     const weeklyBalance: number[] = []
+    const weeklyBlockedJobs: number[] = []
+    
     let runningBalance = Math.floor(seededRandom(seed + 50) * 20)
     for (let w = 0; w < 10; w++) {
       const demand = Math.floor(seededRandom(seed + 60 + w) * 15)
-      const supply = Math.floor(seededRandom(seed + 70 + w) * 12)
+      const onHand = w === 0 ? Math.floor(seededRandom(seed + 200 + w) * 20) : 0
+      const wip = Math.floor(seededRandom(seed + 210 + w) * 8)
+      const openPO = Math.floor(seededRandom(seed + 220 + w) * 10)
+      const inTransit = Math.floor(seededRandom(seed + 230 + w) * 5)
+      const riPending = Math.floor(seededRandom(seed + 240 + w) * 3)
+      
       weeklyDemand.push(demand)
-      weeklySupply.push(supply)
+      weeklyOnHand.push(onHand)
+      weeklyWIP.push(wip)
+      weeklyOpenPO.push(openPO)
+      weeklyInTransit.push(inTransit)
+      weeklyRIPending.push(riPending)
+      
+      const supply = onHand + wip + openPO + inTransit
       runningBalance = runningBalance - demand + supply
       weeklyBalance.push(runningBalance)
+      weeklyBlockedJobs.push(runningBalance < 0 ? Math.abs(Math.floor(runningBalance / 3)) : 0)
     }
     
     const linkedProgramCount = Math.floor(seededRandom(seed + 80) * 3) + 1
     const linkedJobCount = Math.floor(seededRandom(seed + 81) * 5) + 1
     const linkedClinCount = Math.floor(seededRandom(seed + 82) * 2) + 1
+    const daysToFirstBlockedDemand = Math.floor(seededRandom(seed + 250) * 45) + 1
+    const shortWeekDate = new Date(Date.now() + Math.floor(seededRandom(seed + 251) * 28) * 86400000)
+    const recoveryWeekDate = new Date(Date.now() + Math.floor(seededRandom(seed + 252) * 56) * 86400000)
     
     parts.push({
       id: `SP-${String(i + 1).padStart(4, "0")}`,
@@ -244,10 +292,16 @@ const generateShortageParts = (): ShortagePart[] => {
       riQty: Math.floor(seededRandom(seed + 22) * 8),
       expiredQty: Math.floor(seededRandom(seed + 23) * 5),
       holdQty: Math.floor(seededRandom(seed + 24) * 3),
+      shelfLifeRisk: seededRandom(seed + 260) > 0.75,
+      inTransitQty: Math.floor(seededRandom(seed + 261) * 12),
+      wipDependentQty: Math.floor(seededRandom(seed + 262) * 8),
       firstRequiredDate: new Date(Date.now() + Math.floor(seededRandom(seed + 25) * 60) * 86400000),
-      shortWeek: `W${Math.floor(seededRandom(seed + 26) * 4) + 1}`,
-      riskWeek: `W${Math.floor(seededRandom(seed + 27) * 6) + 1}`,
-      recoveryWeek: `W${Math.floor(seededRandom(seed + 28) * 8) + 3}`,
+      daysToFirstBlockedDemand,
+      shortWeek: `WE ${formatWeekEnding(Math.floor(seededRandom(seed + 26) * 4))}`,
+      shortWeekDate,
+      riskWeek: `WE ${formatWeekEnding(Math.floor(seededRandom(seed + 27) * 6))}`,
+      recoveryWeek: `WE ${formatWeekEnding(Math.floor(seededRandom(seed + 28) * 8) + 3)}`,
+      recoveryWeekDate,
       programsImpacted: linkedProgramCount,
       jobsBlocked: linkedJobCount,
       buildsBlocked: Math.floor(seededRandom(seed + 29) * 3) + 1,
@@ -257,6 +311,10 @@ const generateShortageParts = (): ShortagePart[] => {
       linkedClins: clins.slice(0, linkedClinCount),
       revenueAtRisk: Math.floor(seededRandom(seed + 30) * 2000000) + 100000,
       aopAtRisk: Math.floor(seededRandom(seed + 31) * 500000) + 50000,
+      rtwBlocked: seededRandom(seed + 270) > 0.5,
+      rtwBlockedJobs: Math.floor(seededRandom(seed + 271) * 4),
+      linkedLateJobs: Math.floor(seededRandom(seed + 272) * 3),
+      materialDrivenLateJobs: Math.floor(seededRandom(seed + 273) * 2),
       primaryDriver: drivers[Math.floor(seededRandom(seed + 32) * drivers.length)],
       blockingFunction: functions[Math.floor(seededRandom(seed + 33) * functions.length)],
       nextAction: nextActions[Math.floor(seededRandom(seed + 34) * nextActions.length)],
@@ -271,6 +329,8 @@ const generateShortageParts = (): ShortagePart[] => {
       linkedNC: seededRandom(seed + 46) > 0.8 ? `NC-${Math.floor(seededRandom(seed + 47) * 9000) + 1000}` : null,
       daysOnDashboard: Math.floor(seededRandom(seed + 48) * 21) + 1,
       wasVisibleBeforeIncident: seededRandom(seed + 49) > 0.4,
+      lessonLearned: seededRandom(seed + 280) > 0.6 ? lessonLearnedOptions[Math.floor(seededRandom(seed + 281) * lessonLearnedOptions.length)] : null,
+      rootCauseConfirmed: seededRandom(seed + 282) > 0.5,
       priorityFactors: {
         blockedDemandCriticality: Math.floor(seededRandom(seed + 51) * 25),
         dateProximity: Math.floor(seededRandom(seed + 52) * 25),
@@ -288,8 +348,13 @@ const generateShortageParts = (): ShortagePart[] => {
         expired: Math.floor(seededRandom(seed + 62) * 5)
       },
       weeklyDemand,
-      weeklySupply,
-      weeklyBalance
+      weeklyOnHand,
+      weeklyWIP,
+      weeklyOpenPO,
+      weeklyInTransit,
+      weeklyRIPending,
+      weeklyBalance,
+      weeklyBlockedJobs
     })
   }
   
@@ -319,6 +384,29 @@ const StatusBadge = ({ status }: { status: ShortageStatus }) => {
     Covered: "bg-green-100 text-green-700"
   }
   return <Badge className={`text-[9px] ${colors[status]}`}>{status}</Badge>
+}
+
+// Flags Badge Component for compact display of status flags
+const FlagsBadge = ({ part }: { part: ShortagePart }) => {
+  const flags: { label: string; color: string }[] = []
+  if (part.mrbQty > 0) flags.push({ label: "MRB", color: "bg-orange-100 text-orange-700" })
+  if (part.riQty > 0) flags.push({ label: "RI", color: "bg-amber-100 text-amber-700" })
+  if (part.shelfLifeRisk) flags.push({ label: "SL", color: "bg-lime-100 text-lime-700" })
+  if (part.noSubstitute) flags.push({ label: "NS", color: "bg-pink-100 text-pink-700" })
+  if (part.longLead) flags.push({ label: "LL", color: "bg-purple-100 text-purple-700" })
+  if (part.inTransitQty > 0) flags.push({ label: "IT", color: "bg-cyan-100 text-cyan-700" })
+  if (part.wipDependentQty > 0) flags.push({ label: "WIP", color: "bg-blue-100 text-blue-700" })
+  
+  if (flags.length === 0) return <span className="text-gray-400 text-[9px]">-</span>
+  
+  return (
+    <div className="flex flex-wrap gap-0.5">
+      {flags.slice(0, 4).map((flag, idx) => (
+        <Badge key={idx} className={`text-[7px] px-1 py-0 ${flag.color}`}>{flag.label}</Badge>
+      ))}
+      {flags.length > 4 && <Badge className="text-[7px] px-1 py-0 bg-gray-100 text-gray-600">+{flags.length - 4}</Badge>}
+    </div>
+  )
 }
 
 const PriorityDecomposition = ({ factors }: { factors: ShortagePart["priorityFactors"] }) => {
@@ -363,6 +451,8 @@ export function ShortageCriticalPath() {
   const [selectedPart, setSelectedPart] = useState<ShortagePart | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drillDownDriver, setDrillDownDriver] = useState<ShortageDriver | null>(null)
+  const [criticalPathFilter, setCriticalPathFilter] = useState<"all" | "no-sub" | "long-lead" | "multi-pgm">("all")
+  const [heatmapMetric, setHeatmapMetric] = useState<"shortage" | "jobs" | "demand">("shortage")
   
   // Generate data
   const shortageParts = useMemo(() => generateShortageParts(), [])
@@ -392,6 +482,19 @@ export function ShortageCriticalPath() {
     return result
   }, [shortageParts, criticalPathOnly, shortageStatus, selectedProgram, drillDownDriver])
   
+  // Critical path filtered parts
+  const criticalPathFilteredParts = useMemo(() => {
+    let result = filteredParts.filter(p => p.criticalPath)
+    if (criticalPathFilter === "no-sub") {
+      result = result.filter(p => p.noSubstitute)
+    } else if (criticalPathFilter === "long-lead") {
+      result = result.filter(p => p.longLead)
+    } else if (criticalPathFilter === "multi-pgm") {
+      result = result.filter(p => p.programsImpacted > 1)
+    }
+    return result
+  }, [filteredParts, criticalPathFilter])
+  
   // KPI calculations
   const kpis = useMemo(() => {
     const shortParts = shortageParts.filter(p => p.status === "Short")
@@ -402,6 +505,7 @@ export function ShortageCriticalPath() {
     const totalRevenueAtRisk = shortageParts.reduce((sum, p) => sum + p.revenueAtRisk, 0)
     const mrbDrivenBlocks = shortageParts.filter(p => p.primaryDriver === "MRB Hold" || p.primaryDriver === "RI Queue").length
     const surpriseLateJobs = shortageParts.filter(p => !p.wasVisibleBeforeIncident).length
+    const rtwBlocked = shortageParts.filter(p => p.rtwBlocked).length
     
     return {
       partsInShortage: shortParts.length,
@@ -411,19 +515,23 @@ export function ShortageCriticalPath() {
       clinsAtRisk: totalClinsAtRisk,
       revenueAtRisk: totalRevenueAtRisk,
       mrbDrivenBlocks,
-      surpriseLateJobs
+      surpriseLateJobs,
+      rtwBlocked
     }
   }, [shortageParts])
   
-  // Impact matrix data
+  // Impact matrix data - using Days to First Blocked Demand instead of Lead Time
   const impactMatrixData = useMemo(() => {
     return filteredParts.slice(0, 40).map(p => ({
-      x: p.leadTimeDays,
+      x: p.daysToFirstBlockedDemand,
       y: p.priorityScore,
       z: p.jobsBlocked * 5 + p.revenueAtRisk / 100000,
       name: p.partNumber,
       driver: p.primaryDriver,
-      tier: p.priorityTier
+      tier: p.priorityTier,
+      leadTime: p.leadTimeDays,
+      clins: p.clinsBlocked,
+      jobs: p.jobsBlocked
     }))
   }, [filteredParts])
   
@@ -454,7 +562,7 @@ export function ShortageCriticalPath() {
     return Object.entries(functionCounts).map(([func, counts]) => ({ function: func, ...counts }))
   }, [filteredParts])
   
-  // CLIN impact data
+  // CLIN impact data with top blocking parts
   const clinImpactData = useMemo(() => {
     const clinMap: Record<string, { 
       clin: string; 
@@ -466,6 +574,8 @@ export function ShortageCriticalPath() {
       revenueAtRisk: number;
       primaryDriver: ShortageDriver;
       recoveryConfidence: string;
+      topBlockingParts: string[];
+      partsList: ShortagePart[];
     }> = {}
     
     filteredParts.forEach(p => {
@@ -480,10 +590,13 @@ export function ShortageCriticalPath() {
             highestPriority: 0,
             revenueAtRisk: 0,
             primaryDriver: p.primaryDriver,
-            recoveryConfidence: "Medium"
+            recoveryConfidence: "Medium",
+            topBlockingParts: [],
+            partsList: []
           }
         }
         clinMap[clin].linkedParts++
+        clinMap[clin].partsList.push(p)
         if (p.criticalPath) clinMap[clin].criticalParts++
         clinMap[clin].highestPriority = Math.max(clinMap[clin].highestPriority, p.priorityScore)
         clinMap[clin].revenueAtRisk += p.revenueAtRisk
@@ -494,19 +607,25 @@ export function ShortageCriticalPath() {
       .sort((a, b) => b.highestPriority - a.highestPriority)
       .map(c => ({
         ...c,
-        recoveryConfidence: c.highestPriority >= 85 ? "Low" : c.highestPriority >= 65 ? "Medium" : "High"
+        recoveryConfidence: c.highestPriority >= 85 ? "Low" : c.highestPriority >= 65 ? "Medium" : "High",
+        topBlockingParts: c.partsList.sort((a, b) => b.priorityScore - a.priorityScore).slice(0, 3).map(p => p.partNumber)
       }))
   }, [filteredParts])
   
-  // Trend data
+  // Trend data with real week-ending dates
   const trendData = useMemo(() => {
-    return Array.from({ length: 12 }, (_, i) => ({
-      week: `W${i + 1}`,
-      shortParts: Math.floor(seededRandom(i + 100) * 30) + 20,
-      atRiskParts: Math.floor(seededRandom(i + 200) * 25) + 15,
-      criticalPathParts: Math.floor(seededRandom(i + 300) * 15) + 8,
-      jobsBlocked: Math.floor(seededRandom(i + 400) * 20) + 10
-    }))
+    return Array.from({ length: 12 }, (_, i) => {
+      const weekDate = new Date(Date.now() - (11 - i) * 7 * 86400000)
+      const dayOfWeek = weekDate.getDay()
+      weekDate.setDate(weekDate.getDate() + (7 - dayOfWeek) % 7)
+      return {
+        week: `${weekDate.getMonth() + 1}/${weekDate.getDate()}`,
+        shortParts: Math.floor(seededRandom(i + 100) * 30) + 20,
+        atRiskParts: Math.floor(seededRandom(i + 200) * 25) + 15,
+        criticalPathParts: Math.floor(seededRandom(i + 300) * 15) + 8,
+        jobsBlocked: Math.floor(seededRandom(i + 400) * 20) + 10
+      }
+    })
   }, [])
   
   // Handle part selection
@@ -523,6 +642,12 @@ export function ShortageCriticalPath() {
   // Navigate to ranked list with filter
   const navigateToRankedWithFilter = (driver: ShortageDriver) => {
     setDrillDownDriver(driver)
+    setActiveTab("ranked")
+  }
+  
+  // Navigate to ranked list filtered for a CLIN's parts
+  const navigateToClinParts = (partNumbers: string[]) => {
+    // In a real implementation, this would filter the ranked list
     setActiveTab("ranked")
   }
 
@@ -669,7 +794,7 @@ export function ShortageCriticalPath() {
               { label: "Jobs Blocked", value: kpis.jobsBlocked, icon: ClipboardList, color: "text-blue-600", bg: "bg-blue-50" },
               { label: "CLINs at Risk", value: kpis.clinsAtRisk, icon: Target, color: "text-indigo-600", bg: "bg-indigo-50" },
               { label: "Revenue at Risk", value: formatCurrency(kpis.revenueAtRisk), icon: DollarSign, color: "text-green-600", bg: "bg-green-50" },
-              { label: "RTW Blocks (Supply)", value: Math.floor(kpis.jobsBlocked * 0.6), icon: Wrench, color: "text-cyan-600", bg: "bg-cyan-50" },
+              { label: "RTW Blocks (Supply)", value: kpis.rtwBlocked, icon: Wrench, color: "text-cyan-600", bg: "bg-cyan-50" },
               { label: "MRB/RI Blocks", value: kpis.mrbDrivenBlocks, icon: ShieldAlert, color: "text-orange-600", bg: "bg-orange-50" },
               { label: "Surprise Late Jobs", value: kpis.surpriseLateJobs, icon: AlertCircle, color: "text-pink-600", bg: "bg-pink-50" }
             ].map((kpi, idx) => (
@@ -686,20 +811,33 @@ export function ShortageCriticalPath() {
           </div>
           
           <div className="grid grid-cols-2 gap-6">
-            {/* Impact vs Timing Matrix */}
+            {/* Impact vs Timing Matrix - FIXED: Using Days to First Blocked Demand */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
                 <div>
-                  <CardTitle className="text-sm font-bold text-gray-800">Impact vs Timing Matrix</CardTitle>
-                  <p className="text-[10px] text-gray-500 mt-0.5">Bubble size = jobs blocked + revenue impact; color = primary driver</p>
+                  <CardTitle className="text-sm font-bold text-gray-800">Priority vs Demand Timing Urgency</CardTitle>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Bubble size = blocked demand / business impact; x-axis reflects timing to first affected demand, not supplier lead time.</p>
                 </div>
               </CardHeader>
               <CardContent className="p-4">
                 <ResponsiveContainer width="100%" height={300}>
-                  <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                  <ScatterChart margin={{ top: 20, right: 20, bottom: 30, left: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis type="number" dataKey="x" name="Lead Time (days)" tick={{ fontSize: 10 }} label={{ value: "Lead Time (days)", position: "bottom", fontSize: 10 }} />
-                    <YAxis type="number" dataKey="y" name="Priority Score" tick={{ fontSize: 10 }} label={{ value: "Priority Score", angle: -90, position: "left", fontSize: 10 }} />
+                    <XAxis 
+                      type="number" 
+                      dataKey="x" 
+                      name="Days to First Blocked Demand" 
+                      tick={{ fontSize: 10 }} 
+                      label={{ value: "Days to First Blocked Demand", position: "bottom", fontSize: 10, offset: 15 }}
+                      domain={[0, 'auto']}
+                    />
+                    <YAxis 
+                      type="number" 
+                      dataKey="y" 
+                      name="Priority Score" 
+                      tick={{ fontSize: 10 }} 
+                      label={{ value: "Priority Score", angle: -90, position: "left", fontSize: 10 }} 
+                    />
                     <ZAxis type="number" dataKey="z" range={[50, 400]} />
                     <RechartsTooltip
                       content={({ active, payload }) => {
@@ -708,15 +846,21 @@ export function ShortageCriticalPath() {
                           return (
                             <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
                               <p className="font-semibold">{data.name}</p>
-                              <p>Priority: {data.y}</p>
-                              <p>Lead Time: {data.x} days</p>
+                              <p>Priority Score: {data.y}</p>
+                              <p>Days to Blocked Demand: {data.x}</p>
+                              <p>Jobs Blocked: {data.jobs}</p>
+                              <p>CLINs Affected: {data.clins}</p>
                               <p>Driver: {data.driver}</p>
+                              <p className="text-gray-500">Lead Time: {data.leadTime} days</p>
                             </div>
                           )
                         }
                         return null
                       }}
                     />
+                    {/* Urgency zones */}
+                    <ReferenceArea x1={0} x2={7} fill="#fee2e2" fillOpacity={0.3} />
+                    <ReferenceArea x1={7} x2={14} fill="#fef3c7" fillOpacity={0.3} />
                     <Scatter data={impactMatrixData}>
                       {impactMatrixData.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={DRIVER_COLORS[entry.driver as ShortageDriver] || COLORS.muted} fillOpacity={0.7} />
@@ -764,7 +908,7 @@ export function ShortageCriticalPath() {
             </Card>
           </div>
           
-          {/* Top Critical Shortages Table */}
+          {/* Top Critical Shortages Table - ENHANCED with Net Demand/Supply/Shortage and Flags */}
           <Card className="border border-gray-200">
             <CardHeader className="py-3 px-4 border-b border-gray-100">
               <div className="flex items-center justify-between">
@@ -786,11 +930,14 @@ export function ShortageCriticalPath() {
                       <th className="text-left p-2 font-semibold text-gray-700">Part Number</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Description</th>
                       <th className="text-center p-2 font-semibold text-gray-700">CP</th>
-                      <th className="text-center p-2 font-semibold text-gray-700">Short Qty</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Demand</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Usable Supply</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Short</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">First Short Wk</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">Flags</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Jobs</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Program/CLIN</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Driver</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                     </tr>
                   </thead>
@@ -799,11 +946,21 @@ export function ShortageCriticalPath() {
                       <tr key={part.id} className={`hover:bg-blue-50 cursor-pointer ${part.priorityTier === "Critical" ? "bg-red-50/30" : ""}`} onClick={() => handleSelectPart(part)}>
                         <td className="p-2 font-bold text-gray-900">{part.rank}</td>
                         <td className="p-2 font-mono text-blue-600">{part.partNumber}</td>
-                        <td className="p-2 text-gray-700 max-w-[180px] truncate">{part.description}</td>
+                        <td className="p-2 text-gray-700 max-w-[140px] truncate">{part.description}</td>
                         <td className="p-2 text-center">
                           {part.criticalPath && <Badge className="text-[8px] bg-purple-100 text-purple-700">CP</Badge>}
                         </td>
-                        <td className="p-2 text-center font-semibold text-red-600">{part.netShortageQty > 0 ? part.netShortageQty : `-${part.atRiskCoverageQty}`}</td>
+                        <td className="p-2 text-right font-medium">{part.netDemand}</td>
+                        <td className="p-2 text-right font-medium text-green-700">{part.netUsableSupply}</td>
+                        <td className={`p-2 text-right font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
+                          {part.netShortageQty > 0 ? part.netShortageQty : `-${part.atRiskCoverageQty}`}
+                        </td>
+                        <td className="p-2 text-center">
+                          <Badge variant="outline" className="text-[9px]">{part.shortWeek}</Badge>
+                        </td>
+                        <td className="p-2 text-center">
+                          <FlagsBadge part={part} />
+                        </td>
                         <td className="p-2 text-center font-semibold">{part.jobsBlocked}</td>
                         <td className="p-2 text-gray-700 text-[10px]">{part.linkedPrograms[0]?.split(" ")[0]} / {part.linkedClins[0]}</td>
                         <td className="p-2">
@@ -811,7 +968,6 @@ export function ShortageCriticalPath() {
                             {part.primaryDriver}
                           </Badge>
                         </td>
-                        <td className="p-2 text-gray-600 max-w-[150px] truncate">{part.nextAction}</td>
                         <td className="p-2 text-gray-600">{part.owner}</td>
                       </tr>
                     ))}
@@ -823,7 +979,7 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* TAB 2: Ranked Shortage List */}
+      {/* TAB 2: Ranked Shortage List - ENHANCED with Flags and RTW/Late Job columns */}
       {activeTab === "ranked" && (
         <div className="space-y-4">
           {/* Summary Strip */}
@@ -848,6 +1004,10 @@ export function ShortageCriticalPath() {
               <Target className="w-4 h-4 text-indigo-500" />
               <span className="text-xs"><strong className="text-indigo-600">{new Set(filteredParts.flatMap(p => p.linkedClins)).size}</strong> CLINs impacted</span>
             </div>
+            <div className="flex items-center gap-2">
+              <Wrench className="w-4 h-4 text-cyan-500" />
+              <span className="text-xs"><strong className="text-cyan-600">{filteredParts.filter(p => p.rtwBlocked).length}</strong> RTW blocked</span>
+            </div>
           </div>
           
           {/* Main Ranked Table */}
@@ -868,19 +1028,16 @@ export function ShortageCriticalPath() {
                       <th className="text-center p-2 font-semibold text-gray-700 w-10">CP</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Part Number</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Description</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Commodity</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Supplier</th>
-                      <th className="text-center p-2 font-semibold text-gray-700">Pgms</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">Flags</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Jobs/CLINs</th>
-                      <th className="text-right p-2 font-semibold text-gray-700">Demand</th>
-                      <th className="text-right p-2 font-semibold text-gray-700">Supply</th>
-                      <th className="text-right p-2 font-semibold text-gray-700">Short</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Required</th>
-                      <th className="text-center p-2 font-semibold text-gray-700">Week</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Demand</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Usable</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Short</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">First Short Wk</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Status</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Driver</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Blocker</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Next Action</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">RTW Blk</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">Late Jobs</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Recovery</th>
                     </tr>
@@ -896,24 +1053,22 @@ export function ShortageCriticalPath() {
                         <td className="p-2 text-center"><PriorityBadge tier={part.priorityTier} score={part.priorityScore} /></td>
                         <td className="p-2 text-center">
                           {part.criticalPath && <Badge className="text-[8px] bg-purple-100 text-purple-700">CP</Badge>}
-                          {part.noSubstitute && <Badge className="text-[7px] bg-pink-100 text-pink-700 ml-0.5">NS</Badge>}
                         </td>
                         <td className="p-2 font-mono text-blue-600">{part.partNumber}</td>
-                        <td className="p-2 text-gray-700 max-w-[150px] truncate" title={part.description}>{part.description}</td>
-                        <td className="p-2 text-gray-600">{part.commodity}</td>
-                        <td className="p-2 text-gray-600">{part.supplier}</td>
-                        <td className="p-2 text-center font-semibold">{part.programsImpacted}</td>
+                        <td className="p-2 text-gray-700 max-w-[120px] truncate" title={part.description}>{part.description}</td>
+                        <td className="p-2 text-center">
+                          <FlagsBadge part={part} />
+                        </td>
                         <td className="p-2 text-center">
                           <span className="text-blue-600 font-semibold">{part.jobsBlocked}</span>
                           <span className="text-gray-400"> / </span>
                           <span className="text-indigo-600 font-semibold">{part.clinsBlocked}</span>
                         </td>
                         <td className="p-2 text-right font-medium">{part.netDemand}</td>
-                        <td className="p-2 text-right font-medium">{part.netUsableSupply}</td>
+                        <td className="p-2 text-right font-medium text-green-700">{part.netUsableSupply}</td>
                         <td className={`p-2 text-right font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
                           {part.netShortageQty > 0 ? part.netShortageQty : `-${part.atRiskCoverageQty}`}
                         </td>
-                        <td className="p-2 text-gray-600">{formatDate(part.firstRequiredDate)}</td>
                         <td className="p-2 text-center">
                           <Badge variant="outline" className="text-[9px]">{part.shortWeek}</Badge>
                         </td>
@@ -923,10 +1078,22 @@ export function ShortageCriticalPath() {
                             {part.primaryDriver}
                           </Badge>
                         </td>
-                        <td className="p-2 text-gray-600 text-[10px] max-w-[100px] truncate">{part.blockingFunction}</td>
-                        <td className="p-2 text-gray-600 max-w-[120px] truncate" title={part.nextAction}>{part.nextAction}</td>
+                        <td className="p-2 text-center">
+                          {part.rtwBlocked ? (
+                            <Badge className="text-[8px] bg-cyan-100 text-cyan-700">{part.rtwBlockedJobs}</Badge>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="p-2 text-center">
+                          {part.linkedLateJobs > 0 ? (
+                            <Badge className="text-[8px] bg-pink-100 text-pink-700">{part.linkedLateJobs}</Badge>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </td>
                         <td className="p-2 text-gray-600">{part.owner}</td>
-                        <td className="p-2 text-gray-600">{formatDate(part.recoveryETA)}</td>
+                        <td className="p-2 text-gray-600">{part.recoveryWeek}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -937,14 +1104,18 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* TAB 3: Critical Path Parts */}
+      {/* TAB 3: Critical Path Parts - FIXED with better charts */}
       {activeTab === "critical" && (
         <div className="space-y-6">
-          {/* Tab Banner */}
+          {/* Tab Banner with tooltip */}
           <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
-            <p className="text-sm text-purple-800">
-              <strong>Critical Path Parts:</strong> Parts with few/no substitutes, long lead times, or high downstream impact that require proactive monitoring.
-            </p>
+            <div className="flex items-start gap-2">
+              <Info className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm text-purple-800 font-medium">Critical Path Parts</p>
+                <p className="text-xs text-purple-700 mt-0.5">Parts with few/no substitutes, long lead times, or high downstream impact across important jobs/builds/CLINs. These require proactive monitoring to prevent schedule and revenue impact.</p>
+              </div>
+            </div>
           </div>
           
           {/* Toggle Filters */}
@@ -957,7 +1128,12 @@ export function ShortageCriticalPath() {
             ].map(filter => (
               <button
                 key={filter.id}
-                className="px-3 py-1.5 rounded text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200"
+                onClick={() => setCriticalPathFilter(filter.id as typeof criticalPathFilter)}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  criticalPathFilter === filter.id 
+                    ? "bg-purple-600 text-white" 
+                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                }`}
               >
                 {filter.label}
               </button>
@@ -965,7 +1141,7 @@ export function ShortageCriticalPath() {
           </div>
           
           <div className="grid grid-cols-2 gap-6">
-            {/* Critical Path Watchlist */}
+            {/* Critical Path Watchlist - ENHANCED */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
                 <CardTitle className="text-sm font-bold text-gray-800">Critical Path Parts Watchlist</CardTitle>
@@ -980,13 +1156,14 @@ export function ShortageCriticalPath() {
                         <th className="text-center p-2 font-semibold text-gray-700">NS</th>
                         <th className="text-center p-2 font-semibold text-gray-700">Lead Time</th>
                         <th className="text-center p-2 font-semibold text-gray-700">Pgms/CLINs</th>
+                        <th className="text-center p-2 font-semibold text-gray-700">Jobs Blk</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Required</th>
-                        <th className="text-center p-2 font-semibold text-gray-700">Short Qty</th>
+                        <th className="text-right p-2 font-semibold text-gray-700">Net Short</th>
                         <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {filteredParts.filter(p => p.criticalPath).slice(0, 20).map((part) => (
+                      {criticalPathFilteredParts.slice(0, 20).map((part) => (
                         <tr key={part.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectPart(part)}>
                           <td className="p-2 font-mono text-blue-600">{part.partNumber}</td>
                           <td className="p-2 text-center">
@@ -1001,8 +1178,9 @@ export function ShortageCriticalPath() {
                           <td className="p-2 text-center">
                             <span className="text-purple-600">{part.programsImpacted}</span> / <span className="text-indigo-600">{part.clinsBlocked}</span>
                           </td>
+                          <td className="p-2 text-center font-semibold text-blue-600">{part.jobsBlocked}</td>
                           <td className="p-2 text-gray-600">{formatDate(part.firstRequiredDate)}</td>
-                          <td className={`p-2 text-center font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
+                          <td className={`p-2 text-right font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
                             {part.netShortageQty > 0 ? part.netShortageQty : part.atRiskCoverageQty}
                           </td>
                           <td className="p-2 text-gray-600">{part.owner}</td>
@@ -1014,15 +1192,18 @@ export function ShortageCriticalPath() {
               </CardContent>
             </Card>
             
-            {/* Fan-Out / Downstream Impact */}
+            {/* Downstream Demand Impact - FIXED: Grouped horizontal bar chart */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Fan-Out / Downstream Impact</CardTitle>
+                <div>
+                  <CardTitle className="text-sm font-bold text-gray-800">Downstream Demand Impact by Critical Part</CardTitle>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Shows how many jobs, builds, CLINs, and programs each critical-path part feeds.</p>
+                </div>
               </CardHeader>
               <CardContent className="p-4">
                 <ResponsiveContainer width="100%" height={360}>
                   <BarChart 
-                    data={filteredParts.filter(p => p.criticalPath).slice(0, 10).map(p => ({
+                    data={criticalPathFilteredParts.slice(0, 8).map(p => ({
                       part: p.partNumber.slice(-6),
                       jobs: p.jobsBlocked,
                       builds: p.buildsBlocked,
@@ -1030,67 +1211,127 @@ export function ShortageCriticalPath() {
                       programs: p.programsImpacted
                     }))} 
                     layout="vertical" 
-                    margin={{ left: 60 }}
+                    margin={{ left: 65, right: 20 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis type="number" tick={{ fontSize: 10 }} />
-                    <YAxis type="category" dataKey="part" tick={{ fontSize: 10 }} width={60} />
-                    <RechartsTooltip />
+                    <YAxis type="category" dataKey="part" tick={{ fontSize: 10 }} width={65} />
+                    <RechartsTooltip 
+                      content={({ active, payload, label }) => {
+                        if (active && payload && payload.length) {
+                          return (
+                            <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
+                              <p className="font-semibold mb-1">{label}</p>
+                              {payload.map((p, idx) => (
+                                <p key={idx} style={{ color: p.color }}>{p.name}: {p.value}</p>
+                              ))}
+                            </div>
+                          )
+                        }
+                        return null
+                      }}
+                    />
                     <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Bar dataKey="jobs" stackId="a" fill="#3b82f6" name="Jobs" />
-                    <Bar dataKey="builds" stackId="a" fill="#8b5cf6" name="Builds" />
-                    <Bar dataKey="clins" stackId="a" fill="#6366f1" name="CLINs" />
-                    <Bar dataKey="programs" stackId="a" fill="#ec4899" name="Programs" />
+                    <Bar dataKey="jobs" fill="#3b82f6" name="Jobs Blocked" />
+                    <Bar dataKey="builds" fill="#8b5cf6" name="Builds Blocked" />
+                    <Bar dataKey="clins" fill="#6366f1" name="CLINs Affected" />
+                    <Bar dataKey="programs" fill="#ec4899" name="Programs Impacted" />
                   </BarChart>
                 </ResponsiveContainer>
               </CardContent>
             </Card>
           </div>
           
-          {/* Critical Path Exposure Heatmap */}
+          {/* Critical Path Exposure Heatmap - FIXED with clear metric selector */}
           <Card className="border border-gray-200">
             <CardHeader className="py-3 px-4 border-b border-gray-100">
-              <CardTitle className="text-sm font-bold text-gray-800">Critical Path Exposure Heatmap</CardTitle>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-sm font-bold text-gray-800">Critical Path Exposure by Week</CardTitle>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Weekly projected blocked demand or net shortage for critical-path parts.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-600">Show:</span>
+                  <Select value={heatmapMetric} onValueChange={(v) => setHeatmapMetric(v as typeof heatmapMetric)}>
+                    <SelectTrigger className="h-7 text-xs w-[140px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="shortage">Net Shortage Qty</SelectItem>
+                      <SelectItem value="jobs">Blocked Jobs</SelectItem>
+                      <SelectItem value="demand">Blocked Demand Qty</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="p-4">
               <div className="grid grid-cols-12 gap-1">
-                <div className="col-span-2" />
-                {Array.from({ length: 10 }, (_, i) => {
-                  const weekDate = new Date(Date.now() + i * 7 * 86400000)
-                  return (
-                    <div key={i} className="text-center text-[9px] text-gray-500 font-medium">
-                      {weekDate.getMonth() + 1}/{weekDate.getDate()}
-                    </div>
-                  )
-                })}
-                {filteredParts.filter(p => p.criticalPath).slice(0, 8).map((part, pIdx) => (
+                <div className="col-span-2 text-[10px] font-semibold text-gray-600">Part Number</div>
+                {Array.from({ length: 10 }, (_, i) => (
+                  <div key={i} className="text-center text-[9px] text-gray-500 font-medium">
+                    WE {formatWeekEnding(i)}
+                  </div>
+                ))}
+                {criticalPathFilteredParts.slice(0, 8).map((part, pIdx) => (
                   <>
-                    <div key={`label-${pIdx}`} className="col-span-2 text-[10px] font-mono text-gray-700 truncate pr-2">
+                    <div key={`label-${pIdx}`} className="col-span-2 text-[10px] font-mono text-gray-700 truncate pr-2 flex items-center">
                       {part.partNumber.slice(-8)}
                     </div>
                     {Array.from({ length: 10 }, (_, wIdx) => {
-                      const balance = part.weeklyBalance[wIdx] || 0
-                      const severity = balance < -10 ? "high" : balance < 0 ? "medium" : balance < 5 ? "low" : "clear"
+                      let value: number
+                      let displayValue: string
+                      
+                      if (heatmapMetric === "shortage") {
+                        value = part.weeklyBalance[wIdx] || 0
+                        displayValue = value !== 0 ? String(value) : ""
+                      } else if (heatmapMetric === "jobs") {
+                        value = part.weeklyBlockedJobs[wIdx] || 0
+                        displayValue = value > 0 ? String(value) : ""
+                      } else {
+                        value = part.weeklyDemand[wIdx] || 0
+                        displayValue = value > 0 ? String(value) : ""
+                      }
+                      
+                      const getSeverity = () => {
+                        if (heatmapMetric === "shortage") {
+                          return value < -10 ? "high" : value < 0 ? "medium" : value < 5 ? "low" : "clear"
+                        } else {
+                          return value >= 3 ? "high" : value >= 1 ? "medium" : value > 0 ? "low" : "clear"
+                        }
+                      }
+                      
+                      const severity = getSeverity()
                       return (
-                        <div
-                          key={`cell-${pIdx}-${wIdx}`}
-                          className="h-7 rounded flex items-center justify-center text-[10px] font-medium cursor-pointer hover:ring-2 hover:ring-blue-400"
-                          style={{
-                            backgroundColor: severity === "high" ? "#fee2e2" : severity === "medium" ? "#fef3c7" : severity === "low" ? "#dbeafe" : "#f3f4f6",
-                            color: severity === "high" ? "#991b1b" : severity === "medium" ? "#92400e" : severity === "low" ? "#1e40af" : "#6b7280"
-                          }}
-                        >
-                          {balance !== 0 ? balance : ""}
-                        </div>
+                        <Tooltip key={`cell-${pIdx}-${wIdx}`}>
+                          <TooltipTrigger asChild>
+                            <div
+                              className="h-7 rounded flex items-center justify-center text-[10px] font-medium cursor-pointer hover:ring-2 hover:ring-blue-400"
+                              style={{
+                                backgroundColor: severity === "high" ? "#fee2e2" : severity === "medium" ? "#fef3c7" : severity === "low" ? "#dbeafe" : "#f3f4f6",
+                                color: severity === "high" ? "#991b1b" : severity === "medium" ? "#92400e" : severity === "low" ? "#1e40af" : "#6b7280"
+                              }}
+                            >
+                              {displayValue}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent className="text-xs bg-gray-900 text-white p-2">
+                            <p className="font-semibold">{part.partNumber}</p>
+                            <p>Week Ending: {formatWeekEnding(wIdx)}</p>
+                            <p>Net Shortage: {part.weeklyBalance[wIdx] || 0}</p>
+                            <p>Blocked Jobs: {part.weeklyBlockedJobs[wIdx] || 0}</p>
+                            <p>Demand: {part.weeklyDemand[wIdx] || 0}</p>
+                          </TooltipContent>
+                        </Tooltip>
                       )
                     })}
                   </>
                 ))}
               </div>
               <div className="flex items-center justify-center gap-4 mt-3 text-[10px]">
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100" /> Severe Shortage</span>
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-100" /> Shortage</span>
-                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100" /> At-Risk</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100" /> High Impact</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-100" /> Medium Impact</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100" /> Low Impact</span>
                 <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-100" /> Covered</span>
               </div>
             </CardContent>
@@ -1098,7 +1339,7 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* TAB 4: Program / CLIN Impact */}
+      {/* TAB 4: Program / CLIN Impact - ENHANCED with top blocking parts */}
       {activeTab === "clin" && (
         <div className="space-y-6">
           <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
@@ -1117,7 +1358,7 @@ export function ShortageCriticalPath() {
                 <div className="grid grid-cols-12 gap-1">
                   <div className="col-span-2" />
                   {Array.from({ length: 10 }, (_, i) => (
-                    <div key={i} className="text-center text-[9px] text-gray-500 font-medium">W{i + 1}</div>
+                    <div key={i} className="text-center text-[9px] text-gray-500 font-medium">WE {formatWeekEnding(i)}</div>
                   ))}
                   {programs.slice(0, 5).map((program, pIdx) => (
                     <>
@@ -1161,41 +1402,48 @@ export function ShortageCriticalPath() {
               <CardContent className="p-4">
                 <div className="space-y-3 max-h-[280px] overflow-auto">
                   {clinImpactData.slice(0, 8).map((clin, idx) => (
-                    <div 
-                      key={idx}
-                      className={`p-3 rounded-lg border cursor-pointer hover:border-blue-400 ${
-                        clin.recoveryConfidence === "Low" ? "bg-red-50 border-red-200" : 
-                        clin.recoveryConfidence === "Medium" ? "bg-amber-50 border-amber-200" : 
-                        "bg-gray-50 border-gray-200"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-gray-900">{clin.program.split(" ")[0]}</span>
-                          <Badge variant="outline" className="text-[9px]">{clin.clin}</Badge>
+                    <Tooltip key={idx}>
+                      <TooltipTrigger asChild>
+                        <div 
+                          className={`p-3 rounded-lg border cursor-pointer hover:border-blue-400 ${
+                            clin.recoveryConfidence === "Low" ? "bg-red-50 border-red-200" : 
+                            clin.recoveryConfidence === "Medium" ? "bg-amber-50 border-amber-200" : 
+                            "bg-gray-50 border-gray-200"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-gray-900">{clin.program.split(" ")[0]}</span>
+                              <Badge variant="outline" className="text-[9px]">{clin.clin}</Badge>
+                            </div>
+                            <span className="text-xs text-gray-600">{formatDate(clin.requiredDate)}</span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-gray-600">
+                              <strong className="text-red-600">{clin.linkedParts}</strong> shortage parts ({clin.criticalParts} critical path)
+                            </span>
+                            <Badge className={`text-[9px] ${
+                              clin.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : 
+                              clin.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : 
+                              "bg-red-100 text-red-700"
+                            }`}>
+                              {clin.recoveryConfidence} Recovery
+                            </Badge>
+                          </div>
                         </div>
-                        <span className="text-xs text-gray-600">{formatDate(clin.requiredDate)}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] text-gray-600">
-                          <strong className="text-red-600">{clin.linkedParts}</strong> shortage parts ({clin.criticalParts} critical path)
-                        </span>
-                        <Badge className={`text-[9px] ${
-                          clin.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : 
-                          clin.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : 
-                          "bg-red-100 text-red-700"
-                        }`}>
-                          {clin.recoveryConfidence} Recovery
-                        </Badge>
-                      </div>
-                    </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                        <p className="font-semibold mb-1">Recovery Confidence: {clin.recoveryConfidence}</p>
+                        <p>Recovery reflects confidence that the causing shortage parts can be recovered before the required CLIN/build date based on current supply position, blocker severity, and planned actions.</p>
+                      </TooltipContent>
+                    </Tooltip>
                   ))}
                 </div>
               </CardContent>
             </Card>
           </div>
           
-          {/* Parts Driving Commitment Risk */}
+          {/* CLINs at Risk - ENHANCED with Top Blocking Parts */}
           <Card className="border border-gray-200">
             <CardHeader className="py-3 px-4 border-b border-gray-100">
               <CardTitle className="text-sm font-bold text-gray-800">CLINs at Risk from Shortages</CardTitle>
@@ -1210,8 +1458,8 @@ export function ShortageCriticalPath() {
                       <th className="text-left p-2 font-semibold text-gray-700">Required Date</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Shortage Parts</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Critical Path</th>
+                      <th className="text-left p-2 font-semibold text-gray-700">Top Blocking Parts</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Highest Priority</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Primary Driver</th>
                       <th className="text-right p-2 font-semibold text-gray-700">Revenue at Risk</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Recovery</th>
                     </tr>
@@ -1224,23 +1472,42 @@ export function ShortageCriticalPath() {
                         <td className="p-2 text-gray-600">{formatDate(clin.requiredDate)}</td>
                         <td className="p-2 text-center font-semibold text-red-600">{clin.linkedParts}</td>
                         <td className="p-2 text-center font-semibold text-purple-600">{clin.criticalParts}</td>
+                        <td className="p-2">
+                          <div className="flex flex-wrap gap-1">
+                            {clin.topBlockingParts.map((pn, i) => (
+                              <Badge 
+                                key={i} 
+                                variant="outline" 
+                                className="text-[8px] cursor-pointer hover:bg-blue-100"
+                                onClick={() => {
+                                  const part = filteredParts.find(p => p.partNumber === pn)
+                                  if (part) handleSelectPart(part)
+                                }}
+                              >
+                                {pn.slice(-6)}
+                              </Badge>
+                            ))}
+                          </div>
+                        </td>
                         <td className="p-2 text-center">
                           <PriorityBadge tier={clin.highestPriority >= 85 ? "Critical" : clin.highestPriority >= 65 ? "High" : "Medium"} score={clin.highestPriority} />
                         </td>
-                        <td className="p-2">
-                          <Badge variant="outline" className="text-[9px]" style={{ borderColor: DRIVER_COLORS[clin.primaryDriver], color: DRIVER_COLORS[clin.primaryDriver] }}>
-                            {clin.primaryDriver}
-                          </Badge>
-                        </td>
                         <td className="p-2 text-right font-medium text-gray-700">{formatCurrency(clin.revenueAtRisk)}</td>
                         <td className="p-2 text-center">
-                          <Badge className={`text-[9px] ${
-                            clin.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : 
-                            clin.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : 
-                            "bg-red-100 text-red-700"
-                          }`}>
-                            {clin.recoveryConfidence}
-                          </Badge>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge className={`text-[9px] cursor-help ${
+                                clin.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : 
+                                clin.recoveryConfidence === "Medium" ? "bg-amber-100 text-amber-700" : 
+                                "bg-red-100 text-red-700"
+                              }`}>
+                                {clin.recoveryConfidence}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent className="text-xs bg-gray-900 text-white p-2 max-w-xs">
+                              Recovery reflects confidence that the causing shortage parts can be recovered before the required CLIN/build date based on current supply position, blocker severity, and planned actions.
+                            </TooltipContent>
+                          </Tooltip>
                         </td>
                       </tr>
                     ))}
@@ -1252,12 +1519,12 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* TAB 5: Supply Netting & Coverage */}
+      {/* TAB 5: Supply Netting & Coverage - ENHANCED with source-by-source supply */}
       {activeTab === "netting" && (
         <div className="space-y-6">
           <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-lg">
             <p className="text-sm text-cyan-800">
-              <strong>Supply Netting & Coverage:</strong> Select a part below to see true shortage mechanics and usable supply breakdown.
+              <strong>Supply Netting & Coverage:</strong> Select a part below to see true shortage mechanics and usable supply breakdown by source.
             </p>
           </div>
           
@@ -1274,10 +1541,10 @@ export function ShortageCriticalPath() {
                       <th className="text-left p-2 font-semibold text-gray-700">Part Number</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Description</th>
                       <th className="text-center p-2 font-semibold text-gray-700">Status</th>
-                      <th className="text-right p-2 font-semibold text-gray-700">Demand</th>
-                      <th className="text-right p-2 font-semibold text-gray-700">Supply</th>
-                      <th className="text-right p-2 font-semibold text-gray-700">Short</th>
-                      <th className="text-center p-2 font-semibold text-gray-700">Short Week</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Demand</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Usable Supply</th>
+                      <th className="text-right p-2 font-semibold text-gray-700">Net Short</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">First Short Wk</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -1291,7 +1558,7 @@ export function ShortageCriticalPath() {
                         <td className="p-2 text-gray-700 max-w-[200px] truncate">{part.description}</td>
                         <td className="p-2 text-center"><StatusBadge status={part.status} /></td>
                         <td className="p-2 text-right font-medium">{part.netDemand}</td>
-                        <td className="p-2 text-right font-medium">{part.netUsableSupply}</td>
+                        <td className="p-2 text-right font-medium text-green-700">{part.netUsableSupply}</td>
                         <td className={`p-2 text-right font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
                           {part.netShortageQty > 0 ? part.netShortageQty : part.atRiskCoverageQty}
                         </td>
@@ -1308,73 +1575,146 @@ export function ShortageCriticalPath() {
           
           {selectedPart && (
             <div className="grid grid-cols-2 gap-6">
-              {/* Time-Phased Demand vs Supply */}
+              {/* Time-Phased Demand vs Supply - ENHANCED with source breakdown */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">
-                    Time-Phased Demand vs Supply: {selectedPart.partNumber}
-                  </CardTitle>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">
+                      Time-Phased Demand vs Net Usable Supply: {selectedPart.partNumber}
+                    </CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Supply shown by source (stacked), demand as line</p>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <ResponsiveContainer width="100%" height={280}>
+                  <ResponsiveContainer width="100%" height={300}>
                     <ComposedChart data={Array.from({ length: 10 }, (_, i) => ({
-                      week: `W${i + 1}`,
+                      week: `WE ${formatWeekEnding(i)}`,
                       demand: selectedPart.weeklyDemand[i] || 0,
-                      supply: selectedPart.weeklySupply[i] || 0,
+                      onHand: selectedPart.weeklyOnHand[i] || 0,
+                      wip: selectedPart.weeklyWIP[i] || 0,
+                      openPO: selectedPart.weeklyOpenPO[i] || 0,
+                      inTransit: selectedPart.weeklyInTransit[i] || 0,
                       balance: selectedPart.weeklyBalance[i] || 0
                     }))}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="week" tick={{ fontSize: 10 }} />
+                      <XAxis dataKey="week" tick={{ fontSize: 9 }} angle={-45} textAnchor="end" height={50} />
                       <YAxis tick={{ fontSize: 10 }} />
                       <RechartsTooltip />
                       <Legend wrapperStyle={{ fontSize: 10 }} />
-                      <Bar dataKey="demand" fill="#ef4444" name="Demand" />
-                      <Bar dataKey="supply" fill="#22c55e" name="Supply" />
-                      <Line type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={2} name="Balance" dot={{ r: 3 }} />
+                      <Bar dataKey="onHand" stackId="supply" fill="#22c55e" name="On Hand (Usable)" />
+                      <Bar dataKey="wip" stackId="supply" fill="#3b82f6" name="WIP" />
+                      <Bar dataKey="openPO" stackId="supply" fill="#8b5cf6" name="Open PO" />
+                      <Bar dataKey="inTransit" stackId="supply" fill="#06b6d4" name="In Transit" />
+                      <Line type="monotone" dataKey="demand" stroke="#ef4444" strokeWidth={2} name="Demand" dot={{ r: 3 }} />
+                      {/* Mark first short week and recovery week */}
+                      <ReferenceLine x={selectedPart.shortWeek} stroke="#ef4444" strokeDasharray="3 3" label={{ value: "Short", fill: "#ef4444", fontSize: 9 }} />
+                      <ReferenceLine x={selectedPart.recoveryWeek} stroke="#22c55e" strokeDasharray="3 3" label={{ value: "Recovery", fill: "#22c55e", fontSize: 9 }} />
                     </ComposedChart>
                   </ResponsiveContainer>
-                  <div className="mt-2 p-2 bg-gray-50 rounded text-[10px]">
+                  <div className="mt-2 p-2 bg-gray-50 rounded flex items-center justify-between text-[10px]">
                     <span className="text-red-600 font-semibold">First Short Week: {selectedPart.shortWeek}</span>
-                    <span className="mx-2">|</span>
                     <span className="text-green-600 font-semibold">Recovery Week: {selectedPart.recoveryWeek}</span>
                   </div>
                 </CardContent>
               </Card>
               
-              {/* Supply Status Composition */}
+              {/* Supply Status Composition - ENHANCED with waterfall bar */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Supply Status Composition</CardTitle>
+                  <div>
+                    <CardTitle className="text-sm font-bold text-gray-800">Supply Status Composition</CardTitle>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Usable vs excluded supply breakdown</p>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <ResponsiveContainer width="100%" height={280}>
-                    <PieChart>
-                      <Pie
-                        data={[
-                          { name: "On Hand (Usable)", value: selectedPart.supplyBreakdown.onHand, fill: "#22c55e" },
-                          { name: "WIP", value: selectedPart.supplyBreakdown.wip, fill: "#3b82f6" },
-                          { name: "Open PO", value: selectedPart.supplyBreakdown.openPO, fill: "#8b5cf6" },
-                          { name: "In Transit", value: selectedPart.supplyBreakdown.inTransit, fill: "#06b6d4" },
-                          { name: "RI Pending", value: selectedPart.supplyBreakdown.riPending, fill: "#f59e0b" },
-                          { name: "MRB Hold", value: selectedPart.supplyBreakdown.mrbHold, fill: "#ef4444" },
-                          { name: "Expired", value: selectedPart.supplyBreakdown.expired, fill: "#64748b" }
-                        ]}
-                        cx="50%"
-                        cy="50%"
-                        outerRadius={100}
-                        dataKey="value"
-                        label={({ name, value }) => value > 0 ? `${name}: ${value}` : ""}
-                        labelLine={false}
-                      />
-                      <RechartsTooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
-                    <div className="p-2 bg-green-50 rounded">
-                      <span className="font-semibold text-green-700">Usable Supply: {selectedPart.supplyBreakdown.onHand + selectedPart.supplyBreakdown.wip + selectedPart.supplyBreakdown.inTransit}</span>
+                  {/* Stacked horizontal bar for supply */}
+                  <div className="space-y-4">
+                    {/* Usable Supply Bar */}
+                    <div>
+                      <p className="text-xs font-semibold text-green-700 mb-2">Usable Supply</p>
+                      <div className="flex h-8 rounded overflow-hidden">
+                        {[
+                          { label: "On Hand", value: selectedPart.supplyBreakdown.onHand, color: "#22c55e" },
+                          { label: "WIP", value: selectedPart.supplyBreakdown.wip, color: "#3b82f6" },
+                          { label: "Open PO", value: selectedPart.supplyBreakdown.openPO, color: "#8b5cf6" },
+                          { label: "In Transit", value: selectedPart.supplyBreakdown.inTransit, color: "#06b6d4" }
+                        ].map((item, idx) => {
+                          const total = selectedPart.supplyBreakdown.onHand + selectedPart.supplyBreakdown.wip + 
+                                        selectedPart.supplyBreakdown.openPO + selectedPart.supplyBreakdown.inTransit
+                          const width = total > 0 ? (item.value / total) * 100 : 0
+                          return width > 0 ? (
+                            <Tooltip key={idx}>
+                              <TooltipTrigger asChild>
+                                <div 
+                                  className="flex items-center justify-center text-white text-[10px] font-medium"
+                                  style={{ width: `${width}%`, backgroundColor: item.color }}
+                                >
+                                  {width > 15 && `${item.value}`}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent className="text-xs">{item.label}: {item.value}</TooltipContent>
+                            </Tooltip>
+                          ) : null
+                        })}
+                      </div>
+                      <div className="flex gap-3 mt-2 text-[10px]">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#22c55e" }} /> On Hand: {selectedPart.supplyBreakdown.onHand}</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#3b82f6" }} /> WIP: {selectedPart.supplyBreakdown.wip}</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#8b5cf6" }} /> Open PO: {selectedPart.supplyBreakdown.openPO}</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#06b6d4" }} /> In Transit: {selectedPart.supplyBreakdown.inTransit}</span>
+                      </div>
                     </div>
-                    <div className="p-2 bg-red-50 rounded">
-                      <span className="font-semibold text-red-700">Excluded: {selectedPart.supplyBreakdown.mrbHold + selectedPart.supplyBreakdown.expired + selectedPart.supplyBreakdown.riPending}</span>
+                    
+                    {/* Excluded Supply Bar */}
+                    <div>
+                      <p className="text-xs font-semibold text-red-700 mb-2">Excluded Supply (Not Usable)</p>
+                      <div className="flex h-8 rounded overflow-hidden">
+                        {[
+                          { label: "RI Pending", value: selectedPart.supplyBreakdown.riPending, color: "#f59e0b" },
+                          { label: "MRB Hold", value: selectedPart.supplyBreakdown.mrbHold, color: "#ef4444" },
+                          { label: "Expired", value: selectedPart.supplyBreakdown.expired, color: "#64748b" }
+                        ].map((item, idx) => {
+                          const total = selectedPart.supplyBreakdown.riPending + selectedPart.supplyBreakdown.mrbHold + 
+                                        selectedPart.supplyBreakdown.expired
+                          const width = total > 0 ? (item.value / total) * 100 : 0
+                          return width > 0 ? (
+                            <Tooltip key={idx}>
+                              <TooltipTrigger asChild>
+                                <div 
+                                  className="flex items-center justify-center text-white text-[10px] font-medium"
+                                  style={{ width: `${width}%`, backgroundColor: item.color }}
+                                >
+                                  {width > 15 && `${item.value}`}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent className="text-xs">{item.label}: {item.value}</TooltipContent>
+                            </Tooltip>
+                          ) : null
+                        })}
+                      </div>
+                      <div className="flex gap-3 mt-2 text-[10px]">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#f59e0b" }} /> RI Pending: {selectedPart.supplyBreakdown.riPending}</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#ef4444" }} /> MRB: {selectedPart.supplyBreakdown.mrbHold}</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: "#64748b" }} /> Expired: {selectedPart.supplyBreakdown.expired}</span>
+                      </div>
+                    </div>
+                    
+                    {/* Summary */}
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-200">
+                      <div className="p-3 bg-green-50 rounded-lg">
+                        <p className="text-[10px] text-green-600 uppercase font-medium">Total Usable Supply</p>
+                        <p className="text-xl font-bold text-green-700">
+                          {selectedPart.supplyBreakdown.onHand + selectedPart.supplyBreakdown.wip + 
+                           selectedPart.supplyBreakdown.openPO + selectedPart.supplyBreakdown.inTransit}
+                        </p>
+                      </div>
+                      <div className="p-3 bg-red-50 rounded-lg">
+                        <p className="text-[10px] text-red-600 uppercase font-medium">Total Excluded</p>
+                        <p className="text-xl font-bold text-red-700">
+                          {selectedPart.supplyBreakdown.riPending + selectedPart.supplyBreakdown.mrbHold + 
+                           selectedPart.supplyBreakdown.expired}
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </CardContent>
@@ -1571,7 +1911,7 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* TAB 7: Role Workbench */}
+      {/* TAB 7: Role Workbench - ENHANCED with distinct views */}
       {activeTab === "workbench" && (
         <div className="space-y-4">
           {/* Role Selector */}
@@ -1598,16 +1938,16 @@ export function ShortageCriticalPath() {
             ))}
           </div>
           
-          {/* Planner View */}
+          {/* Planner View - ENHANCED */}
           {workbenchRole === "planner" && (
             <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">Parts Needing Reallocation</div>
                   <div className="text-xl font-bold text-blue-600">{filteredParts.filter(p => p.nextAction.includes("Reallocate")).length}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">Near-Term Required</div>
+                  <div className="text-[10px] text-gray-500 uppercase">Near-Term Required (14d)</div>
                   <div className="text-xl font-bold text-red-600">{filteredParts.filter(p => p.firstRequiredDate < new Date(Date.now() + 14 * 86400000)).length}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
@@ -1617,6 +1957,10 @@ export function ShortageCriticalPath() {
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">Jobs Blocked</div>
                   <div className="text-xl font-bold text-gray-900">{new Set(filteredParts.flatMap(p => p.linkedJobs)).size}</div>
+                </Card>
+                <Card className="border border-gray-200 p-3">
+                  <div className="text-[10px] text-gray-500 uppercase">CLINs Impacted</div>
+                  <div className="text-xl font-bold text-indigo-600">{new Set(filteredParts.flatMap(p => p.linkedClins)).size}</div>
                 </Card>
               </div>
               
@@ -1632,8 +1976,9 @@ export function ShortageCriticalPath() {
                           <th className="text-left p-2 font-semibold text-gray-700">Part Number</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Jobs/CLINs</th>
-                          <th className="text-right p-2 font-semibold text-gray-700">Short Qty</th>
+                          <th className="text-right p-2 font-semibold text-gray-700">Net Short</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Required</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">Flags</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Action</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                         </tr>
@@ -1650,6 +1995,7 @@ export function ShortageCriticalPath() {
                               {part.netShortageQty > 0 ? part.netShortageQty : part.atRiskCoverageQty}
                             </td>
                             <td className="p-2 text-gray-600">{formatDate(part.firstRequiredDate)}</td>
+                            <td className="p-2 text-center"><FlagsBadge part={part} /></td>
                             <td className="p-2 text-gray-600 max-w-[150px] truncate">{part.nextAction}</td>
                             <td className="p-2 text-gray-600">{part.owner}</td>
                           </tr>
@@ -1662,10 +2008,10 @@ export function ShortageCriticalPath() {
             </div>
           )}
           
-          {/* Buyer View */}
+          {/* Buyer View - ENHANCED */}
           {workbenchRole === "buyer" && (
             <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">Supplier Slips</div>
                   <div className="text-xl font-bold text-purple-600">{filteredParts.filter(p => p.primaryDriver === "Supplier Slip").length}</div>
@@ -1679,6 +2025,10 @@ export function ShortageCriticalPath() {
                   <div className="text-xl font-bold text-blue-600">{filteredParts.filter(p => p.linkedPO && p.priorityTier === "Critical").length}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
+                  <div className="text-[10px] text-gray-500 uppercase">Alternate Source Needed</div>
+                  <div className="text-xl font-bold text-amber-600">{filteredParts.filter(p => p.noSubstitute && p.status === "Short").length}</div>
+                </Card>
+                <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">Revenue at Risk</div>
                   <div className="text-xl font-bold text-gray-900">{formatCurrency(filteredParts.filter(p => p.blockingFunction === "Buyer/MPM/Supply Chain").reduce((s, p) => s + p.revenueAtRisk, 0))}</div>
                 </Card>
@@ -1686,7 +2036,7 @@ export function ShortageCriticalPath() {
               
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Buyer: Prioritized Expedite Queue</CardTitle>
+                  <CardTitle className="text-sm font-bold text-gray-800">Buyer: Prioritized Expedite & Sourcing Queue</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="max-h-[450px] overflow-auto">
@@ -1699,6 +2049,7 @@ export function ShortageCriticalPath() {
                           <th className="text-left p-2 font-semibold text-gray-700">PO Ref</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Promise Date</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Driver</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">Slip History</th>
                           <th className="text-right p-2 font-semibold text-gray-700">Short Qty</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Action</th>
                         </tr>
@@ -1716,6 +2067,13 @@ export function ShortageCriticalPath() {
                                 {part.primaryDriver}
                               </Badge>
                             </td>
+                            <td className="p-2 text-center">
+                              {Math.floor(seededRandom(parseInt(part.id.slice(-4))) * 3) > 0 ? (
+                                <Badge className="text-[8px] bg-red-100 text-red-700">{Math.floor(seededRandom(parseInt(part.id.slice(-4))) * 3)} slips</Badge>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
                             <td className={`p-2 text-right font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
                               {part.netShortageQty > 0 ? part.netShortageQty : part.atRiskCoverageQty}
                             </td>
@@ -1730,10 +2088,10 @@ export function ShortageCriticalPath() {
             </div>
           )}
           
-          {/* Program View */}
+          {/* Program View - ENHANCED */}
           {workbenchRole === "program" && (
             <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">CLINs at Risk</div>
                   <div className="text-xl font-bold text-indigo-600">{new Set(filteredParts.flatMap(p => p.linkedClins)).size}</div>
@@ -1747,14 +2105,18 @@ export function ShortageCriticalPath() {
                   <div className="text-xl font-bold text-gray-900">{formatCurrency(filteredParts.reduce((s, p) => s + p.revenueAtRisk, 0))}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">Programs Impacted</div>
-                  <div className="text-xl font-bold text-blue-600">{new Set(filteredParts.flatMap(p => p.linkedPrograms)).size}</div>
+                  <div className="text-[10px] text-gray-500 uppercase">AOP Impact</div>
+                  <div className="text-xl font-bold text-green-600">{formatCurrency(filteredParts.reduce((s, p) => s + p.aopAtRisk, 0))}</div>
+                </Card>
+                <Card className="border border-gray-200 p-3">
+                  <div className="text-[10px] text-gray-500 uppercase">Customer Visibility</div>
+                  <div className="text-xl font-bold text-red-600">{filteredParts.filter(p => p.priorityTier === "Critical" && p.clinsBlocked > 0).length}</div>
                 </Card>
               </div>
               
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Program: CLIN & Milestone Exposure</CardTitle>
+                  <CardTitle className="text-sm font-bold text-gray-800">Program: CLIN & Milestone Exposure with Revenue Impact</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="max-h-[450px] overflow-auto">
@@ -1763,10 +2125,12 @@ export function ShortageCriticalPath() {
                         <tr className="border-b border-gray-200">
                           <th className="text-left p-2 font-semibold text-gray-700">Program</th>
                           <th className="text-left p-2 font-semibold text-gray-700">CLIN</th>
+                          <th className="text-left p-2 font-semibold text-gray-700">Required Date</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Shortage Parts</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Critical Path</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Required Date</th>
                           <th className="text-right p-2 font-semibold text-gray-700">Revenue at Risk</th>
+                          <th className="text-right p-2 font-semibold text-gray-700">AOP Impact</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">Customer Vis</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Recovery</th>
                         </tr>
                       </thead>
@@ -1775,10 +2139,14 @@ export function ShortageCriticalPath() {
                           <tr key={idx} className={`hover:bg-blue-50 ${clin.recoveryConfidence === "Low" ? "bg-red-50/30" : ""}`}>
                             <td className="p-2 font-medium text-gray-900">{clin.program}</td>
                             <td className="p-2 text-blue-600">{clin.clin}</td>
+                            <td className="p-2 text-gray-600">{formatDate(clin.requiredDate)}</td>
                             <td className="p-2 text-center font-semibold text-red-600">{clin.linkedParts}</td>
                             <td className="p-2 text-center font-semibold text-purple-600">{clin.criticalParts}</td>
-                            <td className="p-2 text-gray-600">{formatDate(clin.requiredDate)}</td>
                             <td className="p-2 text-right font-medium">{formatCurrency(clin.revenueAtRisk)}</td>
+                            <td className="p-2 text-right font-medium text-green-700">{formatCurrency(clin.revenueAtRisk * 0.3)}</td>
+                            <td className="p-2 text-center">
+                              {clin.highestPriority >= 85 && <Badge className="text-[8px] bg-red-100 text-red-700">High</Badge>}
+                            </td>
                             <td className="p-2 text-center">
                               <Badge className={`text-[9px] ${
                                 clin.recoveryConfidence === "High" ? "bg-green-100 text-green-700" : 
@@ -1798,31 +2166,35 @@ export function ShortageCriticalPath() {
             </div>
           )}
           
-          {/* Quality View */}
+          {/* Quality View - ENHANCED */}
           {workbenchRole === "quality" && (
             <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">MRB Holds</div>
-                  <div className="text-xl font-bold text-orange-600">{filteredParts.filter(p => p.primaryDriver === "MRB Hold").length}</div>
+                  <div className="text-[10px] text-gray-500 uppercase">MRB Qty Blocked</div>
+                  <div className="text-xl font-bold text-orange-600">{filteredParts.reduce((s, p) => s + p.mrbQty, 0)}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">RI Queue</div>
-                  <div className="text-xl font-bold text-amber-600">{filteredParts.filter(p => p.primaryDriver === "RI Queue").length}</div>
+                  <div className="text-[10px] text-gray-500 uppercase">RI Queue Qty</div>
+                  <div className="text-xl font-bold text-amber-600">{filteredParts.reduce((s, p) => s + p.riQty, 0)}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">Shelf-Life Issues</div>
-                  <div className="text-xl font-bold text-lime-600">{filteredParts.filter(p => p.primaryDriver === "Shelf-Life").length}</div>
+                  <div className="text-[10px] text-gray-500 uppercase">Shelf-Life Risk</div>
+                  <div className="text-xl font-bold text-lime-600">{filteredParts.filter(p => p.shelfLifeRisk).length}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">Jobs Blocked</div>
+                  <div className="text-[10px] text-gray-500 uppercase">Parts w/ NC Ref</div>
+                  <div className="text-xl font-bold text-red-600">{filteredParts.filter(p => p.linkedNC).length}</div>
+                </Card>
+                <Card className="border border-gray-200 p-3">
+                  <div className="text-[10px] text-gray-500 uppercase">Jobs Blocked (Quality)</div>
                   <div className="text-xl font-bold text-gray-900">{filteredParts.filter(p => p.blockingFunction === "Quality/MRB").reduce((s, p) => s + p.jobsBlocked, 0)}</div>
                 </Card>
               </div>
               
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Quality: MRB/RI Disposition Queue</CardTitle>
+                  <CardTitle className="text-sm font-bold text-gray-800">Quality: MRB/RI Disposition Queue with NC References</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="max-h-[450px] overflow-auto">
@@ -1832,15 +2204,18 @@ export function ShortageCriticalPath() {
                           <th className="text-left p-2 font-semibold text-gray-700">Part Number</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Hold Type</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">MRB/RI Ref</th>
-                          <th className="text-right p-2 font-semibold text-gray-700">Hold Qty</th>
+                          <th className="text-left p-2 font-semibold text-gray-700">MRB Ref</th>
+                          <th className="text-left p-2 font-semibold text-gray-700">RI Ref</th>
+                          <th className="text-left p-2 font-semibold text-gray-700">NC Ref</th>
+                          <th className="text-right p-2 font-semibold text-gray-700">MRB Qty</th>
+                          <th className="text-right p-2 font-semibold text-gray-700">RI Qty</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">Shelf-Life</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Jobs Blocked</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Action</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Owner</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {filteredParts.filter(p => ["MRB Hold", "RI Queue", "Shelf-Life"].includes(p.primaryDriver) || p.blockingFunction === "Quality/MRB").slice(0, 25).map((part) => (
+                        {filteredParts.filter(p => ["MRB Hold", "RI Queue", "Shelf-Life"].includes(p.primaryDriver) || p.blockingFunction === "Quality/MRB" || p.mrbQty > 0 || p.riQty > 0).slice(0, 25).map((part) => (
                           <tr key={part.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectPart(part)}>
                             <td className="p-2 font-mono text-blue-600">{part.partNumber}</td>
                             <td className="p-2 text-center"><PriorityBadge tier={part.priorityTier} /></td>
@@ -1849,10 +2224,15 @@ export function ShortageCriticalPath() {
                                 {part.primaryDriver}
                               </Badge>
                             </td>
-                            <td className="p-2 font-mono text-blue-600 text-[10px]">{part.linkedMRB || part.linkedRI || "-"}</td>
-                            <td className="p-2 text-right font-semibold text-orange-600">{part.mrbQty + part.riQty + part.expiredQty}</td>
+                            <td className="p-2 font-mono text-blue-600 text-[10px]">{part.linkedMRB || "-"}</td>
+                            <td className="p-2 font-mono text-blue-600 text-[10px]">{part.linkedRI || "-"}</td>
+                            <td className="p-2 font-mono text-blue-600 text-[10px]">{part.linkedNC || "-"}</td>
+                            <td className="p-2 text-right font-semibold text-orange-600">{part.mrbQty || "-"}</td>
+                            <td className="p-2 text-right font-semibold text-amber-600">{part.riQty || "-"}</td>
+                            <td className="p-2 text-center">
+                              {part.shelfLifeRisk && <Badge className="text-[8px] bg-lime-100 text-lime-700">Risk</Badge>}
+                            </td>
                             <td className="p-2 text-center font-semibold">{part.jobsBlocked}</td>
-                            <td className="p-2 text-gray-600 max-w-[140px] truncate">{part.nextAction}</td>
                             <td className="p-2 text-gray-600">{part.owner}</td>
                           </tr>
                         ))}
@@ -1864,13 +2244,17 @@ export function ShortageCriticalPath() {
             </div>
           )}
           
-          {/* Ops View */}
+          {/* Ops View - ENHANCED */}
           {workbenchRole === "ops" && (
             <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">RTW Blockers (Material)</div>
-                  <div className="text-xl font-bold text-red-600">{Math.floor(filteredParts.length * 0.4)}</div>
+                  <div className="text-xl font-bold text-red-600">{filteredParts.filter(p => p.rtwBlocked).length}</div>
+                </Card>
+                <Card className="border border-gray-200 p-3">
+                  <div className="text-[10px] text-gray-500 uppercase">RTW Blocked Jobs</div>
+                  <div className="text-xl font-bold text-cyan-600">{filteredParts.reduce((s, p) => s + p.rtwBlockedJobs, 0)}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">Capacity/Test Driven</div>
@@ -1878,17 +2262,17 @@ export function ShortageCriticalPath() {
                 </Card>
                 <Card className="border border-gray-200 p-3">
                   <div className="text-[10px] text-gray-500 uppercase">Routing Issues</div>
-                  <div className="text-xl font-bold text-cyan-600">{filteredParts.filter(p => p.primaryDriver === "Routing/Process").length}</div>
+                  <div className="text-xl font-bold text-blue-600">{filteredParts.filter(p => p.primaryDriver === "Routing/Process").length}</div>
                 </Card>
                 <Card className="border border-gray-200 p-3">
-                  <div className="text-[10px] text-gray-500 uppercase">Jobs at Risk</div>
-                  <div className="text-xl font-bold text-gray-900">{new Set(filteredParts.flatMap(p => p.linkedJobs)).size}</div>
+                  <div className="text-[10px] text-gray-500 uppercase">Stalled Flow Parts</div>
+                  <div className="text-xl font-bold text-gray-900">{filteredParts.filter(p => p.wipDependentQty > 0).length}</div>
                 </Card>
               </div>
               
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
-                  <CardTitle className="text-sm font-bold text-gray-800">Ops: Critical Parts by Value Stream Impact</CardTitle>
+                  <CardTitle className="text-sm font-bold text-gray-800">Ops: RTW Blockers & Value Stream Impact</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="max-h-[450px] overflow-auto">
@@ -1898,22 +2282,33 @@ export function ShortageCriticalPath() {
                           <th className="text-left p-2 font-semibold text-gray-700">Part Number</th>
                           <th className="text-center p-2 font-semibold text-gray-700">Priority</th>
                           <th className="text-center p-2 font-semibold text-gray-700">CP</th>
-                          <th className="text-center p-2 font-semibold text-gray-700">Jobs Blocked</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">RTW Blocked</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">RTW Jobs</th>
+                          <th className="text-center p-2 font-semibold text-gray-700">Late Jobs</th>
                           <th className="text-right p-2 font-semibold text-gray-700">Short Qty</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Required</th>
                           <th className="text-left p-2 font-semibold text-gray-700">Driver</th>
-                          <th className="text-left p-2 font-semibold text-gray-700">Recovery ETA</th>
+                          <th className="text-left p-2 font-semibold text-gray-700">Unblock Action</th>
+                          <th className="text-left p-2 font-semibold text-gray-700">Recovery</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {filteredParts.slice(0, 25).map((part) => (
+                        {filteredParts.filter(p => p.rtwBlocked || p.primaryDriver === "Capacity/Test" || p.primaryDriver === "Routing/Process").slice(0, 25).map((part) => (
                           <tr key={part.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleSelectPart(part)}>
                             <td className="p-2 font-mono text-blue-600">{part.partNumber}</td>
                             <td className="p-2 text-center"><PriorityBadge tier={part.priorityTier} /></td>
                             <td className="p-2 text-center">
                               {part.criticalPath && <Badge className="text-[8px] bg-purple-100 text-purple-700">CP</Badge>}
                             </td>
-                            <td className="p-2 text-center font-semibold text-blue-600">{part.jobsBlocked}</td>
+                            <td className="p-2 text-center">
+                              {part.rtwBlocked ? (
+                                <Badge className="text-[8px] bg-red-100 text-red-700">Yes</Badge>
+                              ) : (
+                                <span className="text-gray-400">No</span>
+                              )}
+                            </td>
+                            <td className="p-2 text-center font-semibold text-cyan-600">{part.rtwBlockedJobs || "-"}</td>
+                            <td className="p-2 text-center font-semibold text-pink-600">{part.linkedLateJobs || "-"}</td>
                             <td className={`p-2 text-right font-semibold ${part.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
                               {part.netShortageQty > 0 ? part.netShortageQty : part.atRiskCoverageQty}
                             </td>
@@ -1923,7 +2318,8 @@ export function ShortageCriticalPath() {
                                 {part.primaryDriver}
                               </Badge>
                             </td>
-                            <td className="p-2 text-gray-600">{formatDate(part.recoveryETA)}</td>
+                            <td className="p-2 text-gray-600 max-w-[120px] truncate">{part.nextAction}</td>
+                            <td className="p-2 text-gray-600">{part.recoveryWeek}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1936,7 +2332,7 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* TAB 8: Trends & Governance */}
+      {/* TAB 8: Trends & Governance - ENHANCED with real week labels and lesson learned */}
       {activeTab === "trends" && (
         <div className="space-y-6">
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
@@ -1946,10 +2342,13 @@ export function ShortageCriticalPath() {
           </div>
           
           <div className="grid grid-cols-2 gap-6">
-            {/* Shortage Trend */}
+            {/* Shortage Trend - with real week labels */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Shortage Trend Over Time</CardTitle>
+                <div>
+                  <CardTitle className="text-sm font-bold text-gray-800">Shortage Trend Over Time</CardTitle>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Weekly shortage and blocked-demand trend for selected scope.</p>
+                </div>
               </CardHeader>
               <CardContent className="p-4">
                 <ResponsiveContainer width="100%" height={280}>
@@ -1968,21 +2367,29 @@ export function ShortageCriticalPath() {
               </CardContent>
             </Card>
             
-            {/* Root Cause Mix Over Time */}
+            {/* Root Cause Mix Over Time - with subtitle */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
-                <CardTitle className="text-sm font-bold text-gray-800">Root Cause Mix Over Time</CardTitle>
+                <div>
+                  <CardTitle className="text-sm font-bold text-gray-800">Root Cause Mix Over Time</CardTitle>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Weekly weighted shortage exposure by primary driver.</p>
+                </div>
               </CardHeader>
               <CardContent className="p-4">
                 <ResponsiveContainer width="100%" height={280}>
-                  <AreaChart data={Array.from({ length: 12 }, (_, i) => ({
-                    week: `W${i + 1}`,
-                    supplier: Math.floor(seededRandom(i + 500) * 20) + 10,
-                    quality: Math.floor(seededRandom(i + 600) * 15) + 5,
-                    shelfLife: Math.floor(seededRandom(i + 700) * 8) + 2,
-                    planning: Math.floor(seededRandom(i + 800) * 10) + 3,
-                    capacity: Math.floor(seededRandom(i + 900) * 6) + 2
-                  }))}>
+                  <AreaChart data={Array.from({ length: 12 }, (_, i) => {
+                    const weekDate = new Date(Date.now() - (11 - i) * 7 * 86400000)
+                    const dayOfWeek = weekDate.getDay()
+                    weekDate.setDate(weekDate.getDate() + (7 - dayOfWeek) % 7)
+                    return {
+                      week: `${weekDate.getMonth() + 1}/${weekDate.getDate()}`,
+                      supplier: Math.floor(seededRandom(i + 500) * 20) + 10,
+                      quality: Math.floor(seededRandom(i + 600) * 15) + 5,
+                      shelfLife: Math.floor(seededRandom(i + 700) * 8) + 2,
+                      planning: Math.floor(seededRandom(i + 800) * 10) + 3,
+                      capacity: Math.floor(seededRandom(i + 900) * 6) + 2
+                    }
+                  })}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis dataKey="week" tick={{ fontSize: 10 }} />
                     <YAxis tick={{ fontSize: 10 }} />
@@ -1999,7 +2406,7 @@ export function ShortageCriticalPath() {
             </Card>
           </div>
           
-          {/* Surprise Material-Driven Late Jobs */}
+          {/* Surprise Material-Driven Late Jobs - ENHANCED with Lesson Learned */}
           <Card className="border border-gray-200">
             <CardHeader className="py-3 px-4 border-b border-gray-100">
               <div className="flex items-center justify-between">
@@ -2022,7 +2429,9 @@ export function ShortageCriticalPath() {
                       <th className="text-center p-2 font-semibold text-gray-700">Jobs Blocked</th>
                       <th className="text-center p-2 font-semibold text-gray-700">CLINs Blocked</th>
                       <th className="text-left p-2 font-semibold text-gray-700">Action Taken</th>
-                      <th className="text-left p-2 font-semibold text-gray-700">Outcome</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">Outcome</th>
+                      <th className="text-center p-2 font-semibold text-gray-700">RC Confirmed</th>
+                      <th className="text-left p-2 font-semibold text-gray-700">Lesson Learned</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -2046,8 +2455,8 @@ export function ShortageCriticalPath() {
                         <td className="p-2 text-center font-medium">{part.daysOnDashboard}d</td>
                         <td className="p-2 text-center font-semibold text-blue-600">{part.jobsBlocked}</td>
                         <td className="p-2 text-center font-semibold text-indigo-600">{part.clinsBlocked}</td>
-                        <td className="p-2 text-gray-600 max-w-[150px] truncate">{part.nextAction}</td>
-                        <td className="p-2">
+                        <td className="p-2 text-gray-600 max-w-[120px] truncate">{part.nextAction}</td>
+                        <td className="p-2 text-center">
                           <Badge className={`text-[9px] ${
                             part.actionStatus === "Resolved" ? "bg-green-100 text-green-700" :
                             part.actionStatus === "In Progress" ? "bg-blue-100 text-blue-700" :
@@ -2055,6 +2464,16 @@ export function ShortageCriticalPath() {
                           }`}>
                             {part.actionStatus}
                           </Badge>
+                        </td>
+                        <td className="p-2 text-center">
+                          {part.rootCauseConfirmed ? (
+                            <Badge className="text-[8px] bg-green-100 text-green-700">Yes</Badge>
+                          ) : (
+                            <Badge className="text-[8px] bg-gray-100 text-gray-600">Pending</Badge>
+                          )}
+                        </td>
+                        <td className="p-2 text-gray-600 text-[10px] max-w-[120px] truncate">
+                          {part.lessonLearned || "-"}
                         </td>
                       </tr>
                     ))}
@@ -2095,7 +2514,7 @@ export function ShortageCriticalPath() {
         </div>
       )}
       
-      {/* Part Detail Drawer */}
+      {/* Part Detail Drawer - ENHANCED with Execution Impact section */}
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
           {selectedPart && (
@@ -2107,9 +2526,17 @@ export function ShortageCriticalPath() {
                   <StatusBadge status={selectedPart.status} />
                 </SheetTitle>
                 <p className="text-sm text-gray-500">{selectedPart.description}</p>
-                {selectedPart.criticalPath && (
-                  <Badge className="bg-purple-100 text-purple-700 w-fit">Critical Path Part</Badge>
-                )}
+                <div className="flex gap-2 mt-2">
+                  {selectedPart.criticalPath && (
+                    <Badge className="bg-purple-100 text-purple-700">Critical Path Part</Badge>
+                  )}
+                  {selectedPart.noSubstitute && (
+                    <Badge className="bg-pink-100 text-pink-700">No Substitute</Badge>
+                  )}
+                  {selectedPart.longLead && (
+                    <Badge className="bg-orange-100 text-orange-700">Long Lead</Badge>
+                  )}
+                </div>
               </SheetHeader>
               
               <div className="mt-4 space-y-4">
@@ -2127,11 +2554,11 @@ export function ShortageCriticalPath() {
                     </div>
                     <div>
                       <p className="text-xs text-gray-500">Lead Time</p>
-                      <p className="font-medium">{selectedPart.leadTimeDays} days {selectedPart.longLead && <Badge className="text-[8px] bg-orange-100 text-orange-700 ml-1">Long Lead</Badge>}</p>
+                      <p className="font-medium">{selectedPart.leadTimeDays} days</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">Substitute Available</p>
-                      <p className="font-medium">{selectedPart.noSubstitute ? <Badge className="text-[8px] bg-pink-100 text-pink-700">No</Badge> : "Yes"}</p>
+                      <p className="text-xs text-gray-500">Days to First Blocked Demand</p>
+                      <p className="font-medium">{selectedPart.daysToFirstBlockedDemand} days</p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-500">Owner</p>
@@ -2144,6 +2571,48 @@ export function ShortageCriticalPath() {
                   </div>
                 </div>
                 
+                {/* Execution Impact - NEW SECTION */}
+                <div className="p-4 bg-cyan-50 rounded-lg border border-cyan-200">
+                  <p className="text-xs font-bold text-cyan-700 mb-3">EXECUTION IMPACT</p>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="text-xs text-gray-500">RTW Blocked?</p>
+                      <p className="font-medium">
+                        {selectedPart.rtwBlocked ? (
+                          <Badge className="bg-red-100 text-red-700">Yes - {selectedPart.rtwBlockedJobs} jobs</Badge>
+                        ) : (
+                          <span className="text-green-600">No</span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Linked Late Jobs</p>
+                      <p className="font-semibold text-pink-600">{selectedPart.linkedLateJobs}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Material-Driven Late Jobs</p>
+                      <p className="font-semibold text-red-600">{selectedPart.materialDrivenLateJobs}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Earliest Blocked Job</p>
+                      <p className="font-mono text-blue-600">{selectedPart.linkedJobs[0] || "-"}</p>
+                    </div>
+                  </div>
+                  {selectedPart.linkedJobs.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-cyan-200">
+                      <p className="text-xs text-cyan-700 font-medium mb-1">Blocked Jobs:</p>
+                      <div className="flex flex-wrap gap-1">
+                        {selectedPart.linkedJobs.slice(0, 5).map((job, i) => (
+                          <Badge key={i} variant="outline" className="text-[9px]">{job}</Badge>
+                        ))}
+                        {selectedPart.linkedJobs.length > 5 && (
+                          <Badge variant="outline" className="text-[9px]">+{selectedPart.linkedJobs.length - 5} more</Badge>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
                 {/* Priority Decomposition */}
                 <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
                   <p className="text-xs font-bold text-blue-700 mb-3">PRIORITY SCORE DECOMPOSITION</p>
@@ -2151,8 +2620,8 @@ export function ShortageCriticalPath() {
                 </div>
                 
                 {/* Netting & Coverage */}
-                <div className="p-4 bg-cyan-50 rounded-lg border border-cyan-200">
-                  <p className="text-xs font-bold text-cyan-700 mb-3">NETTING & COVERAGE</p>
+                <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                  <p className="text-xs font-bold text-green-700 mb-3">NETTING & COVERAGE</p>
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
                       <p className="text-xs text-gray-500">Net Demand</p>
@@ -2160,10 +2629,10 @@ export function ShortageCriticalPath() {
                     </div>
                     <div>
                       <p className="text-xs text-gray-500">Net Usable Supply</p>
-                      <p className="font-semibold">{selectedPart.netUsableSupply}</p>
+                      <p className="font-semibold text-green-700">{selectedPart.netUsableSupply}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">Shortage Qty</p>
+                      <p className="text-xs text-gray-500">Net Shortage Qty</p>
                       <p className={`font-semibold ${selectedPart.netShortageQty > 0 ? "text-red-600" : "text-amber-600"}`}>
                         {selectedPart.netShortageQty > 0 ? selectedPart.netShortageQty : `At-Risk: ${selectedPart.atRiskCoverageQty}`}
                       </p>
@@ -2173,13 +2642,14 @@ export function ShortageCriticalPath() {
                       <p className="font-semibold">{selectedPart.shortWeek}</p>
                     </div>
                   </div>
-                  <div className="mt-3 pt-3 border-t border-cyan-200">
-                    <p className="text-xs text-cyan-700 font-medium mb-2">Excluded Supply:</p>
+                  <div className="mt-3 pt-3 border-t border-green-200">
+                    <p className="text-xs text-green-700 font-medium mb-2">Excluded Supply (Flags):</p>
                     <div className="flex flex-wrap gap-2 text-[10px]">
-                      {selectedPart.mrbQty > 0 && <Badge variant="outline">MRB: {selectedPart.mrbQty}</Badge>}
-                      {selectedPart.riQty > 0 && <Badge variant="outline">RI: {selectedPart.riQty}</Badge>}
-                      {selectedPart.expiredQty > 0 && <Badge variant="outline">Expired: {selectedPart.expiredQty}</Badge>}
-                      {selectedPart.holdQty > 0 && <Badge variant="outline">Hold: {selectedPart.holdQty}</Badge>}
+                      {selectedPart.mrbQty > 0 && <Badge className="bg-orange-100 text-orange-700">MRB: {selectedPart.mrbQty}</Badge>}
+                      {selectedPart.riQty > 0 && <Badge className="bg-amber-100 text-amber-700">RI: {selectedPart.riQty}</Badge>}
+                      {selectedPart.expiredQty > 0 && <Badge className="bg-gray-100 text-gray-700">Expired: {selectedPart.expiredQty}</Badge>}
+                      {selectedPart.holdQty > 0 && <Badge className="bg-red-100 text-red-700">Hold: {selectedPart.holdQty}</Badge>}
+                      {selectedPart.shelfLifeRisk && <Badge className="bg-lime-100 text-lime-700">Shelf-Life Risk</Badge>}
                     </div>
                   </div>
                 </div>
@@ -2278,8 +2748,8 @@ export function ShortageCriticalPath() {
                 )}
                 
                 {/* Actions & Recovery */}
-                <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                  <p className="text-xs font-bold text-green-700 mb-3">ACTIONS & RECOVERY</p>
+                <div className="p-4 bg-emerald-50 rounded-lg border border-emerald-200">
+                  <p className="text-xs font-bold text-emerald-700 mb-3">ACTIONS & RECOVERY</p>
                   <div className="space-y-2 text-sm">
                     <div>
                       <p className="text-xs text-gray-500">Primary Driver</p>
