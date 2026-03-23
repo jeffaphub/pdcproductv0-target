@@ -1244,27 +1244,35 @@ export function ShortageCriticalPath() {
                 <ResponsiveContainer width="100%" height={360}>
                   <BarChart 
                     data={criticalPathFilteredParts.slice(0, 8).map(p => ({
-                      part: p.partNumber.slice(-6),
+                      part: p.partNumber,
                       jobs: p.jobsBlocked,
                       builds: p.buildsBlocked,
                       clins: p.clinsBlocked,
                       programs: p.programsImpacted
                     }))} 
                     layout="vertical" 
-                    margin={{ left: 65, right: 20 }}
+                    margin={{ left: 120, right: 20 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis type="number" tick={{ fontSize: 10 }} />
-                    <YAxis type="category" dataKey="part" tick={{ fontSize: 10 }} width={65} />
+                    <YAxis 
+                      type="category" 
+                      dataKey="part" 
+                      tick={{ fontSize: 9 }} 
+                      width={115}
+                      tickFormatter={(value) => value.length > 16 ? `${value.slice(0, 16)}...` : value}
+                    />
                     <RechartsTooltip 
                       content={({ active, payload, label }) => {
                         if (active && payload && payload.length) {
                           return (
-                            <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs">
-                              <p className="font-semibold mb-1">{label}</p>
-                              {payload.map((p, idx) => (
-                                <p key={idx} style={{ color: p.color }}>{p.name}: {p.value}</p>
-                              ))}
+                            <div className="bg-white border border-gray-200 rounded-lg p-2 shadow-lg text-xs max-w-xs">
+                              <p className="font-semibold mb-1 text-gray-800">Part: {label}</p>
+                              <div className="space-y-0.5">
+                                {payload.map((p, idx) => (
+                                  <p key={idx} style={{ color: p.color }}>{p.name}: {p.value}</p>
+                                ))}
+                              </div>
                             </div>
                           )
                         }
