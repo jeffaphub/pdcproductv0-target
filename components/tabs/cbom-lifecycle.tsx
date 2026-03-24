@@ -296,21 +296,68 @@ function generateBOMHierarchy(program: string): BOMNode[] {
   return nodes
 }
 
-function generateChangeEvents(program: string): ChangeEvent[] {
+function generateChangeEvents(program: string, totalDelta: number, lifecycleDeltas: { proposal: number; ebom: number; mbom: number; current: number }): ChangeEvent[] {
   const seed = program.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
   const events: ChangeEvent[] = []
   const eventTypes: ChangeEvent["eventType"][] = ["ECO", "Substitution", "Price Update", "Quantity Change", "Sourcing Change", "Revision Release", "Routing Update", "Scrap Update"]
   const bomTypes: BOMType[] = ["Proposal", "eBOM", "mBOM", "Current"]
   const lifecycleTransitions: ChangeEvent["lifecycleTransition"][] = ["within-ebom", "ebom-to-mbom", "mbom-to-current", "proposal-assumptions"]
   
-  for (let i = 0; i < 20; i++) {
+  // Distribute totalDelta across events, aligning with lifecycle stages
+  const isOverallIncrease = totalDelta > 0
+  const eventCount = 20
+  
+  // Assign events to lifecycle transitions with proportional cost impacts
+  const transitionDeltas = {
+    "proposal-assumptions": lifecycleDeltas.ebom - lifecycleDeltas.proposal,  // Proposal -> eBOM
+    "within-ebom": (lifecycleDeltas.mbom - lifecycleDeltas.ebom) * 0.3,       // Within eBOM changes
+    "ebom-to-mbom": (lifecycleDeltas.mbom - lifecycleDeltas.ebom) * 0.7,      // eBOM -> mBOM
+    "mbom-to-current": lifecycleDeltas.current - lifecycleDeltas.mbom         // mBOM -> Current
+  }
+  
+  for (let i = 0; i < eventCount; i++) {
     const eSeed = seed + i * 77
     const sourceBOM = bomTypes[Math.floor(seededRandom(eSeed) * 3)]
     const targetIdx = Math.min(bomTypes.indexOf(sourceBOM) + 1, 3)
     const qtyBefore = 1 + Math.floor(seededRandom(eSeed + 10) * 5)
     const qtyAfter = qtyBefore + Math.floor(seededRandom(eSeed + 11) * 4) - 1
     const unitCostBefore = 5000 + seededRandom(eSeed + 12) * 20000
-    const unitCostAfter = unitCostBefore * (0.85 + seededRandom(eSeed + 13) * 0.35)
+    
+    // Determine lifecycle transition for this event
+    const transition = lifecycleTransitions[Math.floor(seededRandom(eSeed + 18) * lifecycleTransitions.length)]
+    const transitionDelta = transitionDeltas[transition]
+    
+    // Generate cost impact aligned with the transition's direction
+    // Split the transition delta across ~5 events per transition
+    const eventsPerTransition = eventCount / 4
+    const baseImpact = transitionDelta / eventsPerTransition
+    const variance = Math.abs(baseImpact) * 0.5
+    const costImpact = baseImpact + (seededRandom(eSeed + 3) - 0.5) * variance
+    
+    // Unit cost after should reflect the direction of cost impact
+    const unitCostMultiplier = costImpact > 0 ? (1.05 + seededRandom(eSeed + 13) * 0.25) : (0.75 + seededRandom(eSeed + 13) * 0.20)
+    const unitCostAfter = unitCostBefore * unitCostMultiplier
+    
+    // Select description based on cost impact direction
+    const increaseDescriptions = [
+      "Engineering Change Order: Complexity increase",
+      "Supplier price increase per market conditions",
+      "Quantity increase per customer contract mod",
+      "Premium source required for delivery",
+      "Additional manufacturing operations required",
+      "Scrap/yield rate increased from actuals",
+      "Material spec upgrade for quality requirements"
+    ]
+    const decreaseDescriptions = [
+      "Engineering Change Order: Weight reduction redesign",
+      "Supplier price renegotiation effective Q2",
+      "Quantity reduction optimization",
+      "Alternate source qualification complete",
+      "Manufacturing process improvement - routing",
+      "Scrap/yield rate improved based on actuals",
+      "Material substitution cost savings"
+    ]
+    const descriptions = costImpact > 0 ? increaseDescriptions : decreaseDescriptions
     
     events.push({
       id: `ECO-2024-${100 + i}`,
@@ -319,17 +366,8 @@ function generateChangeEvents(program: string): ChangeEvent[] {
       sourceBOM,
       targetBOM: bomTypes[targetIdx],
       affectedNodes: Array.from({ length: 1 + Math.floor(seededRandom(eSeed + 2) * 5) }, (_, j) => `asm-${j}`),
-      costImpact: (seededRandom(eSeed + 3) - 0.4) * 500000,
-      description: [
-        "Engineering Change Order: Weight reduction redesign",
-        "Supplier price renegotiation effective Q2",
-        "Quantity adjustment per customer contract mod",
-        "Alternate source qualification complete",
-        "Manufacturing process improvement - routing",
-        "Scrap/yield rate update based on actuals",
-        "Material substitution for supply chain risk",
-        "Routing optimization - labor hours reduced"
-      ][Math.floor(seededRandom(eSeed + 4) * 8)],
+      costImpact,
+      description: descriptions[Math.floor(seededRandom(eSeed + 4) * descriptions.length)],
       approver: ["J. Smith", "M. Johnson", "R. Williams", "S. Davis"][Math.floor(seededRandom(eSeed + 5) * 4)],
       status: ["Approved", "Pending", "Effective"][Math.floor(seededRandom(eSeed + 6) * 3)] as ChangeEvent["status"],
       qtyBefore,
@@ -340,7 +378,7 @@ function generateChangeEvents(program: string): ChangeEvent[] {
       supplierAfter: suppliers[Math.floor(seededRandom(eSeed + 15) * suppliers.length)],
       includedInCurrent: seededRandom(eSeed + 16) > 0.3,
       reflectedInEAC: ["Yes", "No", "Partial"][Math.floor(seededRandom(eSeed + 17) * 3)] as ChangeEvent["reflectedInEAC"],
-      lifecycleTransition: lifecycleTransitions[Math.floor(seededRandom(eSeed + 18) * lifecycleTransitions.length)]
+      lifecycleTransition: transition
     })
   }
   
@@ -604,20 +642,22 @@ export function CBOMLifecycle() {
   
   // Data generation
   const bomNodes = useMemo(() => generateBOMHierarchy(selectedProgram), [selectedProgram])
-  const changeEvents = useMemo(() => generateChangeEvents(selectedProgram), [selectedProgram])
   
   // Computed data
   const programNode = bomNodes.find(n => n.level === "program")!
   const assemblyNodes = bomNodes.filter(n => n.level === "assembly")
   
-  // Lifecycle stages for the ribbon
-  const lifecycleStages: LifecycleStage[] = useMemo(() => {
-    const seed = selectedProgram.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  // Calculate lifecycle stage costs first (used by multiple components)
+  const lifecycleCosts = useMemo(() => {
     const proposalCost = programNode.rolledUpCostBaseline * 0.95
     const eBOMCost = programNode.rolledUpCostBaseline * 0.98
     const mBOMCost = programNode.rolledUpCostBaseline * 1.02
     const currentCost = programNode.rolledUpCost
-    
+    return { proposal: proposalCost, ebom: eBOMCost, mbom: mBOMCost, current: currentCost }
+  }, [programNode])
+  
+  // Lifecycle stages for the ribbon
+  const lifecycleStages: LifecycleStage[] = useMemo(() => {
     return [
       {
         id: "Proposal" as BOMType,
@@ -625,7 +665,7 @@ export function CBOMLifecycle() {
         fullLabel: "Proposal Baseline Costed BOM",
         effectiveDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
         revision: "Rev A",
-        rolledUpCost: proposalCost,
+        rolledUpCost: lifecycleCosts.proposal,
         hasChanges: false
       },
       {
@@ -634,7 +674,7 @@ export function CBOMLifecycle() {
         fullLabel: "Engineering BOM (eBOM)",
         effectiveDate: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000),
         revision: "Rev B",
-        rolledUpCost: eBOMCost,
+        rolledUpCost: lifecycleCosts.ebom,
         hasChanges: true
       },
       {
@@ -643,7 +683,7 @@ export function CBOMLifecycle() {
         fullLabel: "Manufacturing BOM (mBOM)",
         effectiveDate: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
         revision: "Rev B",
-        rolledUpCost: mBOMCost,
+        rolledUpCost: lifecycleCosts.mbom,
         hasChanges: true
       },
       {
@@ -652,11 +692,17 @@ export function CBOMLifecycle() {
         fullLabel: "Current Released Costed BOM",
         effectiveDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
         revision: "Rev C",
-        rolledUpCost: currentCost,
+        rolledUpCost: lifecycleCosts.current,
         hasChanges: true
       }
     ]
-  }, [selectedProgram, programNode])
+  }, [lifecycleCosts])
+  
+  // Generate change events with aligned cost impacts based on lifecycle deltas
+  const changeEvents = useMemo(() => {
+    const totalDelta = lifecycleCosts.current - lifecycleCosts.proposal
+    return generateChangeEvents(selectedProgram, totalDelta, lifecycleCosts)
+  }, [selectedProgram, lifecycleCosts])
   
   // Get compare path labels
   const getComparePathLabel = (path: LifecycleComparePath): { source: string; target: string } => {
@@ -1567,6 +1613,18 @@ export function CBOMLifecycle() {
                         </tr>
                       ))}
                     </tbody>
+                    <tfoot className="bg-gray-100 border-t-2 border-gray-300">
+                      <tr>
+                        <td className="p-3 font-bold text-gray-900" colSpan={2}>TOTAL (Program Level)</td>
+                        <td className="p-3 text-right font-bold text-gray-700">{formatCurrency(baselineCost)}</td>
+                        <td className="p-3 text-right font-bold text-gray-900">{formatCurrency(totalCost)}</td>
+                        <td className={`p-3 text-right font-bold ${totalDelta > 0 ? "text-red-600" : "text-green-600"}`}>{formatCurrency(totalDelta)}</td>
+                        <td className={`p-3 text-right font-bold ${totalDeltaPercent > 0 ? "text-red-600" : "text-green-600"}`}>{formatPercent(totalDeltaPercent)}</td>
+                        <td className="p-3" colSpan={4}>
+                          <span className="text-xs text-gray-500">Proposal Baseline vs Current Released BOM</span>
+                        </td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </CardContent>
@@ -1591,12 +1649,49 @@ export function CBOMLifecycle() {
               <span className="text-xs text-gray-500">Click any row to view structural compare details</span>
             </div>
             
-            {/* Timeline */}
+            {/* Timeline - Shows lifecycle stages with cumulative cost changes */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
                 <CardTitle className="text-sm font-bold text-gray-800">BOM Cost Change Timeline</CardTitle>
+                <p className="text-xs text-gray-500 mt-1">Cumulative cost progression from Proposal to Current. Click events for details.</p>
               </CardHeader>
               <CardContent className="p-4">
+                {/* Lifecycle Stage Progression */}
+                <div className="mb-6 p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-gray-700">Lifecycle Cost Progression:</span>
+                    <span className={`text-xs font-bold ${totalDelta > 0 ? "text-red-600" : "text-green-600"}`}>
+                      Net Change: {formatCurrency(totalDelta)} ({formatPercent(totalDeltaPercent)})
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {lifecycleStages.map((stage, i) => (
+                      <React.Fragment key={stage.id}>
+                        <div className="flex flex-col items-center flex-1">
+                          <div className={`w-full p-2 rounded text-center ${
+                            stage.id === "Current" ? "bg-purple-100 border-2 border-purple-400" : "bg-white border border-gray-200"
+                          }`}>
+                            <p className="text-[10px] font-medium text-gray-600">{stage.label}</p>
+                            <p className="text-sm font-bold text-gray-900">{formatCurrency(stage.rolledUpCost)}</p>
+                            <p className="text-[9px] text-gray-400">{stage.effectiveDate.toLocaleDateString()}</p>
+                          </div>
+                        </div>
+                        {i < lifecycleStages.length - 1 && (
+                          <div className="flex flex-col items-center">
+                            <ArrowRight className="w-4 h-4 text-gray-400" />
+                            <span className={`text-[9px] font-medium ${
+                              lifecycleStages[i + 1].rolledUpCost > stage.rolledUpCost ? "text-red-600" : "text-green-600"
+                            }`}>
+                              {formatCurrency(lifecycleStages[i + 1].rolledUpCost - stage.rolledUpCost)}
+                            </span>
+                          </div>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+                
+                {/* Individual Change Events */}
                 <div className="relative">
                   <div className="absolute top-4 left-0 right-0 h-1 bg-gray-200" />
                   <div className="flex justify-between relative">
@@ -1624,10 +1719,35 @@ export function CBOMLifecycle() {
                           <p className={`text-[10px] font-medium ${event.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
                             {formatCurrency(event.costImpact)}
                           </p>
+                          <Badge variant="outline" className="text-[8px] mt-1">
+                            {event.lifecycleTransition === "proposal-assumptions" ? "P→E" :
+                             event.lifecycleTransition === "within-ebom" ? "eBOM" :
+                             event.lifecycleTransition === "ebom-to-mbom" ? "E→M" : "M→C"}
+                          </Badge>
                         </div>
                       </div>
                     ))}
                   </div>
+                </div>
+                
+                {/* Summary by Transition */}
+                <div className="mt-4 grid grid-cols-4 gap-2 text-xs">
+                  {[
+                    { label: "Proposal → eBOM", key: "proposal-assumptions", delta: lifecycleCosts.ebom - lifecycleCosts.proposal },
+                    { label: "Within eBOM", key: "within-ebom", delta: 0 },
+                    { label: "eBOM → mBOM", key: "ebom-to-mbom", delta: lifecycleCosts.mbom - lifecycleCosts.ebom },
+                    { label: "mBOM → Current", key: "mbom-to-current", delta: lifecycleCosts.current - lifecycleCosts.mbom }
+                  ].map(t => (
+                    <div key={t.key} className="p-2 bg-gray-50 rounded text-center">
+                      <p className="text-[10px] text-gray-500">{t.label}</p>
+                      <p className={`font-medium ${t.delta > 0 ? "text-red-600" : t.delta < 0 ? "text-green-600" : "text-gray-500"}`}>
+                        {formatCurrency(t.delta)}
+                      </p>
+                      <p className="text-[9px] text-gray-400">
+                        {changeEvents.filter(e => e.lifecycleTransition === t.key).length} events
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </CardContent>
             </Card>
