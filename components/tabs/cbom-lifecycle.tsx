@@ -632,7 +632,9 @@ export function CBOMLifecycle() {
   }
   
   const totalCost = programNode.rolledUpCost
-  const baselineCost = programNode.rolledUpCostBaseline
+  // Use the actual Proposal stage cost (which is rolledUpCostBaseline * 0.95) to match what's shown in the lifecycle ribbon
+  const proposalBaselineCost = programNode.rolledUpCostBaseline * 0.95
+  const baselineCost = proposalBaselineCost
   const totalDelta = totalCost - baselineCost
   const totalDeltaPercent = (totalDelta / baselineCost) * 100
   
