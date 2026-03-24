@@ -80,10 +80,13 @@ interface Activity {
   assembly: string
   partNumber: string
   qtyRequired: number
-  qtyAvailable: number
+  invQty: number        // Current on-hand inventory
+  expectedQty: number   // Expected incoming qty by due date
+  totalAvailable: number // invQty + expectedQty
+  shortQty: number      // Max(0, qtyRequired - totalAvailable)
   needBy: Date
   expectedDue: Date
-  status: ShortageStatus
+  status: "Covered" | "Partial" | "Shortage"
   impactSeverity: "Low" | "Medium" | "High" | "Critical"
 }
 
@@ -350,18 +353,53 @@ function generateActivities(parts: PartNumber[], assemblyList: Assembly[]): Acti
     
     const assembly = assemblyList.find((_, idx) => part.assemblyId === `asm-${idx}`)
     
+    // Generate realistic quantities that align with shortage status
+    const qtyRequired = 5 + Math.floor(Math.random() * 20)
+    
+    let invQty: number
+    let expectedQty: number
+    let status: "Covered" | "Partial" | "Shortage"
+    let impactSeverity: "Low" | "Medium" | "High" | "Critical"
+    
+    if (hasShortage) {
+      // For shortage parts: total available < required
+      invQty = Math.floor(Math.random() * (qtyRequired * 0.4)) // 0-40% of required in inventory
+      expectedQty = Math.floor(Math.random() * (qtyRequired * 0.3)) // 0-30% expected incoming
+      const totalAvailable = invQty + expectedQty
+      
+      if (totalAvailable < qtyRequired * 0.5) {
+        status = "Shortage"
+        impactSeverity = Math.random() > 0.5 ? "Critical" : "High"
+      } else {
+        status = "Partial"
+        impactSeverity = Math.random() > 0.5 ? "High" : "Medium"
+      }
+    } else {
+      // For covered parts: total available >= required
+      invQty = Math.floor(qtyRequired * 0.5 + Math.random() * qtyRequired * 0.5) // 50-100% in inventory
+      expectedQty = Math.floor(qtyRequired * 0.3 + Math.random() * qtyRequired * 0.5) // Additional 30-80% expected
+      status = "Covered"
+      impactSeverity = Math.random() > 0.5 ? "Low" : "Medium"
+    }
+    
+    const totalAvailable = invQty + expectedQty
+    const shortQty = Math.max(0, qtyRequired - totalAvailable)
+    
     activities.push({
       id: `act-${i}`,
       workOrder: `WO-${2024}${String(i + 1).padStart(4, "0")}`,
       description: `${part.description} Installation`,
       assembly: assembly?.name || "Unknown",
       partNumber: part.partNumber,
-      qtyRequired: 5 + Math.floor(Math.random() * 20),
-      qtyAvailable: hasShortage ? Math.floor(5 + Math.random() * 10) : 5 + Math.floor(Math.random() * 25),
+      qtyRequired,
+      invQty,
+      expectedQty,
+      totalAvailable,
+      shortQty,
       needBy,
       expectedDue,
-      status: hasShortage ? (Math.random() > 0.5 ? "Shortage" : "Partial") : "Covered",
-      impactSeverity: hasShortage ? (["High", "Critical"] as const)[Math.floor(Math.random() * 2)] : (["Low", "Medium"] as const)[Math.floor(Math.random() * 2)]
+      status,
+      impactSeverity
     })
   })
   
@@ -1384,8 +1422,54 @@ function ActivityImpactTab({
                   <th className="text-left p-3 text-xs font-bold text-gray-700">Description</th>
                   <th className="text-left p-3 text-xs font-bold text-gray-700">Assembly</th>
                   <th className="text-left p-3 text-xs font-bold text-gray-700">Part Number</th>
-                  <th className="text-right p-3 text-xs font-bold text-gray-700">Qty Req</th>
-                  <th className="text-right p-3 text-xs font-bold text-gray-700">Qty Avail</th>
+                  <th className="text-right p-3 text-xs font-bold text-gray-700">
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex items-center justify-end gap-1 cursor-help">
+                          Qty Req <Info className="w-3 h-3 text-gray-400" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[200px]">
+                        Quantity required to complete this work order activity
+                      </TooltipContent>
+                    </UITooltip>
+                  </th>
+                  <th className="text-right p-3 text-xs font-bold text-gray-700">
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex items-center justify-end gap-1 cursor-help">
+                          Inv Qty <Info className="w-3 h-3 text-gray-400" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[200px]">
+                        Current on-hand inventory quantity available now
+                      </TooltipContent>
+                    </UITooltip>
+                  </th>
+                  <th className="text-right p-3 text-xs font-bold text-gray-700">
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex items-center justify-end gap-1 cursor-help">
+                          Exp Qty <Info className="w-3 h-3 text-gray-400" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[200px]">
+                        Expected additional quantity arriving by the Expected Due date (from open POs, WIP, etc.)
+                      </TooltipContent>
+                    </UITooltip>
+                  </th>
+                  <th className="text-right p-3 text-xs font-bold text-gray-700">
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex items-center justify-end gap-1 cursor-help">
+                          Short Qty <Info className="w-3 h-3 text-gray-400" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[200px]">
+                        Shortage quantity = Qty Req - (Inv Qty + Exp Qty). Zero means fully covered.
+                      </TooltipContent>
+                    </UITooltip>
+                  </th>
                   <th className="text-left p-3 text-xs font-bold text-gray-700">Need By</th>
                   <th className="text-left p-3 text-xs font-bold text-gray-700">Expected Due</th>
                   <th className="text-center p-3 text-xs font-bold text-gray-700">Status</th>
@@ -1413,10 +1497,16 @@ function ActivityImpactTab({
                         </button>
                       </td>
                       <td className="p-3 text-sm text-right font-medium text-gray-900">{activity.qtyRequired}</td>
-                      <td className={`p-3 text-sm text-right font-medium ${
-                        activity.qtyAvailable < activity.qtyRequired ? "text-red-600" : "text-green-600"
+                      <td className="p-3 text-sm text-right font-medium text-gray-700">
+                        {activity.invQty}
+                      </td>
+                      <td className="p-3 text-sm text-right font-medium text-blue-600">
+                        {activity.expectedQty > 0 ? `+${activity.expectedQty}` : "0"}
+                      </td>
+                      <td className={`p-3 text-sm text-right font-bold ${
+                        activity.shortQty > 0 ? "text-red-600" : "text-green-600"
                       }`}>
-                        {activity.qtyAvailable}
+                        {activity.shortQty > 0 ? `-${activity.shortQty}` : "0"}
                       </td>
                       <td className="p-3 text-sm text-gray-600 whitespace-nowrap">
                         {activity.needBy.toLocaleDateString()}
@@ -1440,7 +1530,7 @@ function ActivityImpactTab({
                 })}
                 {activities.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="p-8 text-center text-gray-400">
+                    <td colSpan={12} className="p-8 text-center text-gray-400">
                       No activities match current filters
                     </td>
                   </tr>
