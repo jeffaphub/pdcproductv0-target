@@ -347,38 +347,69 @@ function generateChangeEvents(program: string): ChangeEvent[] {
   return events.sort((a, b) => b.date.getTime() - a.date.getTime())
 }
 
-function generateCostDrivers(program: string): CostDriver[] {
+function generateCostDrivers(program: string, totalDelta: number, totalCost: number, baselineCost: number): CostDriver[] {
   const seed = program.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
   const drivers: CostDriver[] = []
   const categories: DriverCategory[] = ["Quantity", "Substitution", "Supplier Price", "Make/Buy", "Routing/Labor", "Overhead", "Scrap/Yield", "Engineering", "Manufacturing", "Actuals"]
   const levels = ["Assembly", "Sub-Assembly", "Part"]
   
+  // Determine if overall program cost increased or decreased
+  const isOverallIncrease = totalDelta > 0
+  const overallChangePercent = Math.abs(totalDelta / baselineCost)
+  
   for (let i = 0; i < 30; i++) {
     const dSeed = seed + i * 43
-    const baselineCost = 50000 + seededRandom(dSeed) * 500000
-    const currentCost = baselineCost * (0.75 + seededRandom(dSeed + 1) * 0.5)
-    const delta = currentCost - baselineCost
+    const itemBaselineCost = 50000 + seededRandom(dSeed) * 500000
+    
+    // Align driver direction with program direction
+    // 70% of top drivers should move in same direction as program
+    const movesWithProgram = seededRandom(dSeed + 10) < 0.7
+    
+    let multiplier: number
+    if (isOverallIncrease) {
+      // Program increased - most drivers should increase
+      multiplier = movesWithProgram 
+        ? 1.05 + seededRandom(dSeed + 1) * 0.35  // +5% to +40% increase
+        : 0.85 + seededRandom(dSeed + 1) * 0.12  // -15% to -3% decrease (cost savings)
+    } else {
+      // Program decreased - most drivers should decrease
+      multiplier = movesWithProgram
+        ? 0.65 + seededRandom(dSeed + 1) * 0.30  // -35% to -5% decrease
+        : 1.03 + seededRandom(dSeed + 1) * 0.20  // +3% to +23% increase
+    }
+    
+    const itemCurrentCost = itemBaselineCost * multiplier
+    const delta = itemCurrentCost - itemBaselineCost
+    
+    // Select appropriate driver detail based on delta direction
+    const increaseDetails = [
+      "Qty increased from 2 to 4",
+      "Supplier price increase +8%",
+      "Changed from Buy to Make",
+      "New routing added 2 ops",
+      "Overhead rate adjustment +12%",
+      "ECO-2024-156 redesign added complexity"
+    ]
+    const decreaseDetails = [
+      "Qty reduced from 4 to 2",
+      "Negotiated supplier discount -10%",
+      "Changed from Make to Buy",
+      "Routing optimized, removed 2 ops",
+      "Scrap rate improved 5%",
+      "Value engineering savings"
+    ]
+    
+    const detailOptions = delta > 0 ? increaseDetails : decreaseDetails
     
     drivers.push({
       item: `${assemblies[i % assemblies.length]} ${i < 10 ? "" : `Sub-Asm ${Math.floor(i / 10)}`}`,
       level: levels[Math.floor(seededRandom(dSeed + 2) * 3)],
-      baselineCost,
-      currentCost,
+      baselineCost: itemBaselineCost,
+      currentCost: itemCurrentCost,
       delta,
-      deltaPercent: (delta / baselineCost) * 100,
+      deltaPercent: (delta / itemBaselineCost) * 100,
       driverCategory: categories[Math.floor(seededRandom(dSeed + 3) * categories.length)],
-      driverDetail: [
-        "Qty increased from 2 to 4",
-        "Substituted alternate part",
-        "Supplier price increase +8%",
-        "Changed from Buy to Make",
-        "New routing added 2 ops",
-        "Overhead rate adjustment",
-        "Scrap rate improved 3%",
-        "ECO-2024-156 redesign",
-        "MFG process change",
-        "Actuals true-up Q3"
-      ][Math.floor(seededRandom(dSeed + 4) * 10)],
+      driverDetail: detailOptions[Math.floor(seededRandom(dSeed + 4) * detailOptions.length)],
       sourceBOM: "Proposal",
       targetBOM: "Current",
       revision: `ECO-2024-${100 + i}`,
@@ -386,7 +417,14 @@ function generateCostDrivers(program: string): CostDriver[] {
     })
   }
   
-  return drivers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+  // Sort by absolute delta, but prioritize items moving in same direction as program
+  return drivers.sort((a, b) => {
+    const aMatchesDirection = (a.delta > 0) === isOverallIncrease
+    const bMatchesDirection = (b.delta > 0) === isOverallIncrease
+    if (aMatchesDirection && !bMatchesDirection) return -1
+    if (!aMatchesDirection && bMatchesDirection) return 1
+    return Math.abs(b.delta) - Math.abs(a.delta)
+  })
 }
 
 // ===== FORMATTING =====
@@ -567,7 +605,6 @@ export function CBOMLifecycle() {
   // Data generation
   const bomNodes = useMemo(() => generateBOMHierarchy(selectedProgram), [selectedProgram])
   const changeEvents = useMemo(() => generateChangeEvents(selectedProgram), [selectedProgram])
-  const costDrivers = useMemo(() => generateCostDrivers(selectedProgram), [selectedProgram])
   
   // Computed data
   const programNode = bomNodes.find(n => n.level === "program")!
@@ -637,6 +674,9 @@ export function CBOMLifecycle() {
   const baselineCost = proposalBaselineCost
   const totalDelta = totalCost - baselineCost
   const totalDeltaPercent = (totalDelta / baselineCost) * 100
+  
+  // Generate cost drivers with alignment to program-level delta direction
+  const costDrivers = useMemo(() => generateCostDrivers(selectedProgram, totalDelta, totalCost, baselineCost), [selectedProgram, totalDelta, totalCost, baselineCost])
   
   // Waterfall data - proper floating bar structure
   const waterfallData = useMemo(() => {
