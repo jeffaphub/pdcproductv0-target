@@ -2074,7 +2074,14 @@ export function CBOMLifecycle() {
                       <ComposedChart data={costTrendData} margin={{ left: 20, right: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`} />
+                        <YAxis 
+                          tick={{ fontSize: 10 }} 
+                          tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`}
+                          domain={[
+                            (dataMin: number) => Math.floor(dataMin * 0.95 / 5000000) * 5000000,
+                            (dataMax: number) => Math.ceil(dataMax * 1.05 / 5000000) * 5000000
+                          ]}
+                        />
                         <Tooltip formatter={(value: number) => formatCurrency(value)} />
                         <Legend />
                         <Area type="monotone" dataKey="current" name="BOM Cost" fill={COLORS.primary} fillOpacity={0.2} stroke={COLORS.primary} strokeWidth={2} />
