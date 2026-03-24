@@ -131,7 +131,9 @@ function seededRandom(seed: number) {
 function generateWeekLabel(weeksFromNow: number): string {
   const date = new Date()
   date.setDate(date.getDate() + weeksFromNow * 7)
-  return `W${String(Math.ceil((date.getDate() + new Date(date.getFullYear(), date.getMonth(), 1).getDay()) / 7)).padStart(2, "0")} ${date.toLocaleDateString("en-US", { month: "short" })}`
+  // Use sequential week numbers starting from W01, not calendar week of month
+  const weekNum = weeksFromNow + 1
+  return `W${String(weekNum).padStart(2, "0")} ${date.toLocaleDateString("en-US", { month: "short" })}`
 }
 
 function generateTimeBuckets(weeks: number = 24, program: string = "F-35"): TimeBucket[] {
@@ -266,10 +268,25 @@ function generatePartNumbers(assemblyList: Assembly[], program: string): PartNum
     const partSeed = programSeed + asmIdx * 31
     const partCount = 3 + Math.floor(seededRandom(partSeed) * 5)
     
+    // Parse assembly's shortage week to use for parts
+    const asmShortageWeekNum = asm.firstShortageWeek 
+      ? parseInt(asm.firstShortageWeek.match(/W(\d+)/)?.[1] || "0") - 1 
+      : null
+    
+    // Track how many parts need to have shortage to create the assembly shortage
+    let partsWithShortageNeeded = asm.shortageQty > 0 ? Math.ceil(partCount * 0.6) : 0
+    
     for (let p = 0; p < partCount; p++) {
       const pSeed = partSeed + p * 13
-      const hasShortage = asm.shortageQty > 0 && seededRandom(pSeed) > 0.4
-      const shortageStartWeekNum = hasShortage ? 4 + Math.floor(seededRandom(pSeed + 1) * 8) : null
+      
+      // Parts inherit shortage from assembly - ensure alignment
+      // If assembly has shortage, at least 60% of parts should have shortage
+      const hasShortage = asm.shortageQty > 0 && p < partsWithShortageNeeded
+      
+      // Use the same shortage start week as the assembly (with slight variation for realism)
+      const shortageStartWeekNum = hasShortage && asmShortageWeekNum !== null
+        ? Math.max(0, asmShortageWeekNum + Math.floor(seededRandom(pSeed + 1) * 2) - 1) // +/- 1 week variance
+        : null
       
       const weeklyData: PartNumber["weeklyData"] = []
       let runningStock = 15 + Math.floor(seededRandom(pSeed + 2) * 20)
@@ -278,9 +295,16 @@ function generatePartNumbers(assemblyList: Assembly[], program: string): PartNum
         const wSeed = pSeed + w * 7
         const demand = 5 + Math.floor(seededRandom(wSeed) * 15)
         const isInShortageWindow = hasShortage && shortageStartWeekNum !== null && w >= shortageStartWeekNum && w <= shortageStartWeekNum + 4
-        const supplyBase = isInShortageWindow ? demand * 0.5 : demand * 1.15
+        // When in shortage window, supply is lower than demand causing negative stock
+        const supplyBase = isInShortageWindow ? demand * 0.4 : demand * 1.2
         const supply = Math.floor(supplyBase + seededRandom(wSeed + 1) * 5)
         runningStock = runningStock + supply - demand
+        
+        // Ensure shortage shows up correctly in the shortage window
+        if (isInShortageWindow && runningStock > 0) {
+          runningStock = -Math.floor(5 + seededRandom(wSeed + 2) * 15)
+        }
+        
         weeklyData.push({
           demand,
           supply,
@@ -300,7 +324,7 @@ function generatePartNumbers(assemblyList: Assembly[], program: string): PartNum
         supplier: suppliers[supplierIdx],
         leadTime: 14 + Math.floor(seededRandom(pSeed + 6) * 60),
         moq: [1, 10, 25, 50, 100][Math.floor(seededRandom(pSeed + 7) * 5)],
-        isCritical: hasShortage && seededRandom(pSeed + 8) > 0.6,
+        isCritical: hasShortage && seededRandom(pSeed + 8) > 0.5,
         isSoleSource: seededRandom(pSeed + 9) > 0.7,
         assemblyId: asm.id,
         weeklyData,
@@ -1216,7 +1240,20 @@ function PartLevelTab({
               <thead className="sticky top-0 bg-gray-100 z-10">
                 <tr className="border-b border-gray-200">
                   <th className="text-left p-3 text-xs font-bold text-gray-700 sticky left-0 bg-gray-100 min-w-[120px] z-20">Part Number</th>
-                  <th className="text-left p-3 text-xs font-bold text-gray-700 sticky left-[120px] bg-gray-100 min-w-[80px] z-20">Type</th>
+                  <th className="text-left p-3 text-xs font-bold text-gray-700 sticky left-[120px] bg-gray-100 min-w-[80px] z-20">
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex items-center gap-1 cursor-help">
+                          Type <Info className="w-3 h-3 text-gray-400" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-[250px] text-xs">
+                        <p className="font-semibold mb-1">Part Type Indicators:</p>
+                        <p><span className="font-medium text-purple-700">SS</span> = Sole Source (single supplier, higher risk)</p>
+                        <p><span className="font-medium text-red-700">Crit</span> = Critical part (drives assembly shortage)</p>
+                      </TooltipContent>
+                    </UITooltip>
+                  </th>
                   {weekLabels.map((week, i) => (
                     <th key={i} colSpan={3} className="p-2 text-xs font-medium text-gray-600 text-center border-l border-gray-200 min-w-[150px]">
                       {week}
@@ -1253,10 +1290,27 @@ function PartLevelTab({
                     <td className="p-2 sticky left-[120px] bg-white z-10">
                       <div className="flex gap-1">
                         {part.isSoleSource && (
-                          <Badge className="text-[9px] bg-purple-100 text-purple-700 border-purple-300">SS</Badge>
+                          <UITooltip>
+                            <TooltipTrigger asChild>
+                              <Badge className="text-[9px] bg-purple-100 text-purple-700 border-purple-300 cursor-help">SS</Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="text-xs">
+                              <p><span className="font-semibold">Sole Source:</span> Single supplier, higher supply risk</p>
+                            </TooltipContent>
+                          </UITooltip>
                         )}
                         {part.isCritical && (
-                          <Badge className="text-[9px] bg-red-100 text-red-700 border-red-300">Crit</Badge>
+                          <UITooltip>
+                            <TooltipTrigger asChild>
+                              <Badge className="text-[9px] bg-red-100 text-red-700 border-red-300 cursor-help">Crit</Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="text-xs">
+                              <p><span className="font-semibold">Critical:</span> Part driving assembly shortage</p>
+                            </TooltipContent>
+                          </UITooltip>
+                        )}
+                        {!part.isSoleSource && !part.isCritical && (
+                          <span className="text-[9px] text-gray-400">—</span>
                         )}
                       </div>
                     </td>
