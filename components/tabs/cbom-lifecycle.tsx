@@ -2250,6 +2250,147 @@ export function CBOMLifecycle() {
         )}
       </div>
       
+      {/* Change Event Details Drawer - Available across all tabs */}
+      <Sheet open={changeCompareDrawerOpen} onOpenChange={setChangeCompareDrawerOpen}>
+        <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
+          {selectedChangeEvent && (
+            <>
+              <SheetHeader className="pb-4 border-b border-gray-200">
+                <SheetTitle className="text-lg font-bold text-gray-900">Change Event Details</SheetTitle>
+                <p className="text-sm text-gray-500 font-mono">{selectedChangeEvent.id}</p>
+              </SheetHeader>
+              
+              <div className="mt-4 space-y-4">
+                {/* Event Summary */}
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <p className="text-sm text-gray-900 font-medium">{selectedChangeEvent.description}</p>
+                  <div className="flex items-center gap-2 mt-2">
+                    <Badge className="text-xs">{selectedChangeEvent.eventType}</Badge>
+                    <Badge variant="outline" className={`text-xs ${
+                      selectedChangeEvent.status === "Effective" ? "border-green-300 text-green-700" :
+                      selectedChangeEvent.status === "Approved" ? "border-blue-300 text-blue-700" : "border-amber-300 text-amber-700"
+                    }`}>
+                      {selectedChangeEvent.status}
+                    </Badge>
+                  </div>
+                </div>
+                
+                {/* Cost Impact */}
+                <div className="p-4 border border-gray-200 rounded-lg">
+                  <p className="text-xs text-gray-500 mb-2">Cost Impact</p>
+                  <div className={`text-2xl font-bold ${selectedChangeEvent.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
+                    {formatCurrency(selectedChangeEvent.costImpact)}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {selectedChangeEvent.costImpact > 0 ? "Cost increase" : "Cost savings"}
+                  </p>
+                </div>
+
+                {/* Lifecycle Transition */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500">Source BOM</p>
+                    <Badge className="text-xs mt-1 bg-gray-100 text-gray-700">{selectedChangeEvent.sourceBOM}</Badge>
+                  </div>
+                  <div className="p-3 bg-blue-50 rounded-lg">
+                    <p className="text-xs text-gray-500">Target BOM</p>
+                    <Badge className="text-xs mt-1 bg-blue-100 text-blue-700">{selectedChangeEvent.targetBOM}</Badge>
+                  </div>
+                </div>
+                
+                {/* Before/After Comparison */}
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="bg-gray-100 p-2 text-xs font-semibold text-gray-700">Before / After Comparison</div>
+                  <div className="grid grid-cols-2 divide-x divide-gray-200">
+                    <div className="p-3 space-y-2">
+                      <p className="text-xs font-medium text-gray-500">BEFORE</p>
+                      <div className="text-sm">
+                        <div className="flex justify-between py-1">
+                          <span className="text-gray-500">Quantity</span>
+                          <span className="font-medium">{selectedChangeEvent.qtyBefore}</span>
+                        </div>
+                        <div className="flex justify-between py-1">
+                          <span className="text-gray-500">Unit Cost</span>
+                          <span className="font-medium">{formatCurrency(selectedChangeEvent.unitCostBefore || 0)}</span>
+                        </div>
+                        <div className="flex justify-between py-1">
+                          <span className="text-gray-500">Supplier</span>
+                          <span className="font-medium text-xs">{selectedChangeEvent.supplierBefore}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="p-3 space-y-2 bg-blue-50/50">
+                      <p className="text-xs font-medium text-blue-600">AFTER</p>
+                      <div className="text-sm">
+                        <div className="flex justify-between py-1">
+                          <span className="text-gray-500">Quantity</span>
+                          <span className={`font-medium ${selectedChangeEvent.qtyAfter !== selectedChangeEvent.qtyBefore ? "text-amber-600" : ""}`}>
+                            {selectedChangeEvent.qtyAfter}
+                          </span>
+                        </div>
+                        <div className="flex justify-between py-1">
+                          <span className="text-gray-500">Unit Cost</span>
+                          <span className={`font-medium ${(selectedChangeEvent.unitCostAfter || 0) !== (selectedChangeEvent.unitCostBefore || 0) ? "text-amber-600" : ""}`}>
+                            {formatCurrency(selectedChangeEvent.unitCostAfter || 0)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between py-1">
+                          <span className="text-gray-500">Supplier</span>
+                          <span className={`font-medium text-xs ${selectedChangeEvent.supplierAfter !== selectedChangeEvent.supplierBefore ? "text-amber-600" : ""}`}>
+                            {selectedChangeEvent.supplierAfter}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* EAC Alignment Status */}
+                <div className="p-4 border border-gray-200 rounded-lg">
+                  <p className="text-xs text-gray-500 mb-2">EAC Alignment Status</p>
+                  <div className="flex items-center gap-3">
+                    <Badge className={`${
+                      selectedChangeEvent.reflectedInEAC === "Yes" ? "bg-green-100 text-green-700" :
+                      selectedChangeEvent.reflectedInEAC === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                    }`}>
+                      {selectedChangeEvent.reflectedInEAC === "Yes" ? "Reflected in EAC" :
+                       selectedChangeEvent.reflectedInEAC === "Partial" ? "Partially in EAC" : "Not in EAC"}
+                    </Badge>
+                    {selectedChangeEvent.includedInCurrent && (
+                      <Badge variant="outline" className="text-xs border-green-300 text-green-700">Included in Current BOM</Badge>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Metadata */}
+                <div className="p-4 bg-gray-50 rounded-lg space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Effective Date</span>
+                    <span className="font-medium">{selectedChangeEvent.date.toLocaleDateString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Approver</span>
+                    <span className="font-medium">{selectedChangeEvent.approver}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Affected Items</span>
+                    <span className="font-medium">{selectedChangeEvent.affectedNodes.length} nodes</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Lifecycle Transition</span>
+                    <span className="font-medium">
+                      {selectedChangeEvent.lifecycleTransition === "within-ebom" ? "Within eBOM" :
+                       selectedChangeEvent.lifecycleTransition === "ebom-to-mbom" ? "eBOM to mBOM" :
+                       selectedChangeEvent.lifecycleTransition === "mbom-to-current" ? "mBOM to Current" : "Proposal Assumptions"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+      
       {/* Detail Drawer */}
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
         <SheetContent className="w-[500px] sm:max-w-[500px] overflow-y-auto">
