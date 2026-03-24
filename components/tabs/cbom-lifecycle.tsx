@@ -152,7 +152,26 @@ function generateBOMHierarchy(program: string): BOMNode[] {
   const seed = program.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
   const nodes: BOMNode[] = []
   
-  // Program level
+  // First, generate all assemblies and their costs to properly roll up to program level
+  const assemblyData: { asm: string; asmSeed: number; baselineCost: number; currentCost: number; qty: number; qtyBaseline: number }[] = []
+  let totalAssemblyCurrentCost = 0
+  let totalAssemblyBaselineCost = 0
+  
+  assemblies.forEach((asm, i) => {
+    const asmSeed = seed + i * 100
+    const baselineCost = 3000000 + seededRandom(asmSeed) * 4000000
+    // Allow both increases and decreases vs baseline (0.85 to 1.15 multiplier)
+    const currentCost = baselineCost * (0.85 + seededRandom(asmSeed + 1) * 0.30)
+    const qty = 1 + Math.floor(seededRandom(asmSeed + 2) * 3)
+    const qtyBaseline = 1 + Math.floor(seededRandom(asmSeed + 3) * 3)
+    
+    totalAssemblyCurrentCost += currentCost * qty
+    totalAssemblyBaselineCost += baselineCost * qtyBaseline
+    
+    assemblyData.push({ asm, asmSeed, baselineCost, currentCost, qty, qtyBaseline })
+  })
+  
+  // Program level - use actual rolled-up costs from assemblies
   const programNode: BOMNode = {
     id: "prog-1",
     name: program,
@@ -165,8 +184,8 @@ function generateBOMHierarchy(program: string): BOMNode[] {
     unitCostBaseline: 0,
     extendedCost: 0,
     extendedCostBaseline: 0,
-    rolledUpCost: 45000000 + seededRandom(seed) * 15000000,
-    rolledUpCostBaseline: 42000000 + seededRandom(seed + 1) * 12000000,
+    rolledUpCost: totalAssemblyCurrentCost,
+    rolledUpCostBaseline: totalAssemblyBaselineCost,
     bomSource: "Current",
     revision: "Rev C",
     commodity: "System",
@@ -178,11 +197,8 @@ function generateBOMHierarchy(program: string): BOMNode[] {
   }
   nodes.push(programNode)
   
-  // Assemblies
-  assemblies.forEach((asm, i) => {
-    const asmSeed = seed + i * 100
-    const baselineCost = 3000000 + seededRandom(asmSeed) * 4000000
-    const currentCost = baselineCost * (0.9 + seededRandom(asmSeed + 1) * 0.25)
+// Assemblies - use pre-calculated data
+  assemblyData.forEach(({ asm, asmSeed, baselineCost, currentCost, qty, qtyBaseline }, i) => {
     const changeTypes: BOMNode["changeType"][] = ["none", "quantity", "substitution", "supplier", "price"]
     
     const asmNode: BOMNode = {
@@ -191,14 +207,14 @@ function generateBOMHierarchy(program: string): BOMNode[] {
       partNumber: `ASM-${1000 + i}`,
       level: "assembly",
       parentId: "prog-1",
-      quantity: 1 + Math.floor(seededRandom(asmSeed + 2) * 3),
-      quantityBaseline: 1 + Math.floor(seededRandom(asmSeed + 3) * 3),
+      quantity: qty,
+      quantityBaseline: qtyBaseline,
       unitCost: currentCost,
       unitCostBaseline: baselineCost,
-      extendedCost: currentCost,
-      extendedCostBaseline: baselineCost,
-      rolledUpCost: currentCost,
-      rolledUpCostBaseline: baselineCost,
+      extendedCost: currentCost * qty,
+      extendedCostBaseline: baselineCost * qtyBaseline,
+      rolledUpCost: currentCost * qty,
+      rolledUpCostBaseline: baselineCost * qtyBaseline,
       bomSource: ["Proposal", "eBOM", "mBOM", "Current"][Math.floor(seededRandom(asmSeed + 4) * 4)] as BOMType,
       revision: `Rev ${String.fromCharCode(65 + Math.floor(seededRandom(asmSeed + 5) * 5))}`,
       commodity: commodities[i % commodities.length],
