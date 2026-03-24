@@ -2157,7 +2157,17 @@ export function CBOMLifecycle() {
                                            Math.abs(event.costImpact) > 100000 ? "Medium" : "Low"
                           return (
                             <tr key={event.id} className="hover:bg-blue-50">
-                              <td className="p-3 font-mono text-xs text-blue-600">{event.id}</td>
+                              <td className="p-3">
+                                <button
+                                  onClick={() => {
+                                    setSelectedChangeEvent(event)
+                                    setChangeCompareDrawerOpen(true)
+                                  }}
+                                  className="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                                >
+                                  {event.id}
+                                </button>
+                              </td>
                               <td className="p-3 text-gray-900 max-w-[200px]">
                                 <span className="line-clamp-2">{event.description}</span>
                               </td>
