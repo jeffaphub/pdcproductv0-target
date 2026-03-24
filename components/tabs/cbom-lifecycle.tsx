@@ -2114,48 +2114,90 @@ export function CBOMLifecycle() {
               </Card>
             </div>
             
-            {/* Unaligned Changes Table */}
+            {/* Unaligned Changes Table - Shows BOM cost changes NOT YET reflected in financial forecast (EAC) */}
             <Card className="border border-gray-200">
               <CardHeader className="py-3 px-4 border-b border-gray-100">
                 <CardTitle className="text-sm font-bold text-gray-800">Unaligned Cost Changes</CardTitle>
+                <p className="text-xs text-gray-500 mt-1">BOM cost changes pending incorporation into EAC forecast</p>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="max-h-[300px] overflow-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 sticky top-0">
                       <tr className="border-b border-gray-200">
-                        <th className="text-left p-3 font-semibold text-gray-700">Change Event / Node</th>
+                        <th className="text-left p-3 font-semibold text-gray-700">Change Event ID</th>
+                        <th className="text-left p-3 font-semibold text-gray-700">Description</th>
                         <th className="text-right p-3 font-semibold text-gray-700">BOM Cost Impact</th>
-                        <th className="text-center p-3 font-semibold text-gray-700">Reflected in EAC?</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Financial Owner</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Forecast Cycle</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Status</th>
-                        <th className="text-left p-3 font-semibold text-gray-700">Credibility Risk</th>
+                        <th className="text-center p-3 font-semibold text-gray-700">In EAC?</th>
+                        <th className="text-left p-3 font-semibold text-gray-700">BOM Status</th>
+                        <th className="text-left p-3 font-semibold text-gray-700">Reason Not in EAC</th>
+                        <th className="text-left p-3 font-semibold text-gray-700">Risk Level</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {changeEvents.filter(e => e.status !== "Effective").slice(0, 10).map((event) => (
-                        <tr key={event.id} className="hover:bg-blue-50">
-                          <td className="p-3 font-medium text-gray-900">{event.description.slice(0, 30)}...</td>
-                          <td className={`p-3 text-right font-medium ${event.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
-                            {formatCurrency(event.costImpact)}
-                          </td>
-                          <td className="p-3 text-center">
-                            <Badge className={`text-[10px] ${Math.random() > 0.5 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                              {Math.random() > 0.5 ? "Yes" : "No"}
-                            </Badge>
-                          </td>
-                          <td className="p-3 text-gray-600">{event.approver}</td>
-                          <td className="p-3 text-gray-600">Q1 2025</td>
-                          <td className="p-3"><Badge variant="outline" className="text-[10px]">{event.status}</Badge></td>
-                          <td className="p-3">
-                            <Badge className={`text-[10px] ${Math.abs(event.costImpact) > 200000 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
-                              {Math.abs(event.costImpact) > 200000 ? "High" : "Medium"}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
+                      {changeEvents
+                        .filter(e => e.reflectedInEAC !== "Yes")
+                        .slice(0, 10)
+                        .map((event, idx) => {
+                          const reasons = [
+                            "Pending finance review",
+                            "Awaiting approval",
+                            "Not yet effective",
+                            "Variance under threshold",
+                            "Timing mismatch"
+                          ]
+                          const riskLevel = Math.abs(event.costImpact) > 500000 ? "High" : 
+                                           Math.abs(event.costImpact) > 100000 ? "Medium" : "Low"
+                          return (
+                            <tr key={event.id} className="hover:bg-blue-50">
+                              <td className="p-3 font-mono text-xs text-blue-600">{event.id}</td>
+                              <td className="p-3 text-gray-900 max-w-[200px]">
+                                <span className="line-clamp-2">{event.description}</span>
+                              </td>
+                              <td className={`p-3 text-right font-medium ${event.costImpact > 0 ? "text-red-600" : "text-green-600"}`}>
+                                {formatCurrency(event.costImpact)}
+                              </td>
+                              <td className="p-3 text-center">
+                                <Badge className={`text-[10px] ${
+                                  event.reflectedInEAC === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                                }`}>
+                                  {event.reflectedInEAC}
+                                </Badge>
+                              </td>
+                              <td className="p-3">
+                                <Badge variant="outline" className={`text-[10px] ${
+                                  event.status === "Approved" ? "border-green-300 text-green-700" : "border-amber-300 text-amber-700"
+                                }`}>
+                                  {event.status}
+                                </Badge>
+                              </td>
+                              <td className="p-3 text-gray-600 text-xs">{reasons[idx % reasons.length]}</td>
+                              <td className="p-3">
+                                <Badge className={`text-[10px] ${
+                                  riskLevel === "High" ? "bg-red-100 text-red-700" : 
+                                  riskLevel === "Medium" ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"
+                                }`}>
+                                  {riskLevel}
+                                </Badge>
+                              </td>
+                            </tr>
+                          )
+                        })}
                     </tbody>
+                    <tfoot className="bg-gray-100 border-t border-gray-300">
+                      <tr>
+                        <td colSpan={2} className="p-2 font-semibold text-gray-700 text-sm">Total Unaligned Impact</td>
+                        <td className={`p-2 text-right font-bold text-sm ${
+                          changeEvents.filter(e => e.reflectedInEAC !== "Yes").reduce((sum, e) => sum + e.costImpact, 0) > 0 
+                            ? "text-red-600" : "text-green-600"
+                        }`}>
+                          {formatCurrency(changeEvents.filter(e => e.reflectedInEAC !== "Yes").reduce((sum, e) => sum + e.costImpact, 0))}
+                        </td>
+                        <td colSpan={4} className="p-2 text-xs text-gray-500">
+                          {changeEvents.filter(e => e.reflectedInEAC !== "Yes").length} changes not fully reflected in EAC
+                        </td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </CardContent>
