@@ -699,22 +699,37 @@ export function CBOMLifecycle() {
     return data
   }, [selectedProgram, baselineCost, totalCost, totalDelta])
   
-  // Cost trend data
+  // Cost trend data - must align with lifecycle stages (Proposal -> Current)
   const costTrendData = useMemo(() => {
     const seed = selectedProgram.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
-    return Array.from({ length: 12 }, (_, i) => {
-      const month = new Date(Date.now() - (11 - i) * 30 * 24 * 60 * 60 * 1000)
-      const baseValue = baselineCost * (1 + i * 0.005)
+    const months = 12
+    
+    // Calculate interpolation from Proposal cost to Current cost over 12 months
+    // This ensures the final point matches totalCost exactly
+    return Array.from({ length: months }, (_, i) => {
+      const month = new Date(Date.now() - (months - 1 - i) * 30 * 24 * 60 * 60 * 1000)
+      const progress = i / (months - 1) // 0 to 1
+      
+      // Current line: interpolate from Proposal (baselineCost) to Current (totalCost)
+      // Add small random variation except for last point which must be exact
+      const isLastPoint = i === months - 1
+      const currentValue = isLastPoint 
+        ? totalCost 
+        : baselineCost + (totalCost - baselineCost) * progress * (0.85 + seededRandom(seed + i) * 0.25)
+      
+      // EAC slightly above current, converging at the end
+      const eacValue = currentValue * (1.02 - progress * 0.015) + seededRandom(seed + i + 30) * 500000
+      
       return {
         month: month.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
         baseline: baselineCost,
-        current: baseValue + seededRandom(seed + i) * 2000000,
-        material: baseValue * 0.6 + seededRandom(seed + i + 10) * 500000,
-        labor: baseValue * 0.25 + seededRandom(seed + i + 20) * 200000,
-        eac: baseValue * 1.02 + seededRandom(seed + i + 30) * 1000000
+        current: currentValue,
+        material: currentValue * 0.6,
+        labor: currentValue * 0.25,
+        eac: isLastPoint ? totalCost * 1.01 : eacValue
       }
     })
-  }, [selectedProgram, baselineCost])
+  }, [selectedProgram, baselineCost, totalCost])
   
   // Treemap data
   const treemapData = useMemo(() => {
@@ -1098,7 +1113,14 @@ export function CBOMLifecycle() {
                       <LineChart data={costTrendData} margin={{ left: 20, right: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`} />
+                        <YAxis 
+                          tick={{ fontSize: 10 }} 
+                          tickFormatter={(v) => `$${(v / 1000000).toFixed(0)}M`}
+                          domain={[
+                            (dataMin: number) => Math.floor(dataMin * 0.9 / 5000000) * 5000000,
+                            (dataMax: number) => Math.ceil(dataMax * 1.05 / 5000000) * 5000000
+                          ]}
+                        />
                         <Tooltip formatter={(value: number) => formatCurrency(value)} />
                         <Legend />
                         <Line type="monotone" dataKey="baseline" name="Baseline" stroke={COLORS.neutral} strokeDasharray="5 5" dot={false} />
