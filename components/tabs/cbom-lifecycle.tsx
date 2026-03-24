@@ -883,18 +883,35 @@ export function CBOMLifecycle() {
     return Object.entries(driverSums).map(([driver, value]) => ({ driver, value })).sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
   }, [costDrivers])
   
-  // EAC alignment data
+  // EAC alignment data - derived from actual changeEvents for consistency
   const eacData = useMemo(() => {
     const seed = selectedProgram.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
+    
+    // Count approved changes (Approved or Effective status)
+    const approvedChanges = changeEvents.filter(e => e.status === "Approved" || e.status === "Effective").length
+    
+    // Count changes incorporated in EAC (reflectedInEAC === "Yes")
+    const incorporatedInEAC = changeEvents.filter(e => e.reflectedInEAC === "Yes").length
+    
+    // Unincorporated = Approved but not yet in EAC
+    const unincorporatedChanges = approvedChanges - incorporatedInEAC
+    
+    // High risk = large cost impact changes not in EAC
+    const highRiskChanges = changeEvents.filter(e => 
+      e.reflectedInEAC !== "Yes" && Math.abs(e.costImpact) > 500000
+    ).length
+    
     return {
       bomCost: totalCost,
       eac: totalCost * (1.02 + seededRandom(seed) * 0.05),
       cpi: 0.92 + seededRandom(seed + 1) * 0.15,
       credibilityScore: 75 + Math.floor(seededRandom(seed + 2) * 20),
-      unincorporatedChanges: 3 + Math.floor(seededRandom(seed + 3) * 5),
-      highRiskChanges: Math.floor(seededRandom(seed + 4) * 3)
+      approvedChanges,
+      incorporatedInEAC,
+      unincorporatedChanges: Math.max(0, unincorporatedChanges),
+      highRiskChanges
     }
-  }, [selectedProgram, totalCost])
+  }, [selectedProgram, totalCost, changeEvents])
   
   return (
     <div className="min-h-screen bg-gray-50">
@@ -2046,8 +2063,20 @@ export function CBOMLifecycle() {
               />
               <KPICard title="CPI" value={eacData.cpi.toFixed(2)} delta={eacData.cpi >= 1 ? "On Track" : "At Risk"} trend={eacData.cpi >= 1 ? "down" : "up"} icon={TrendingUp} />
               <KPICard 
+                title="Approved Changes" 
+                value={eacData.approvedChanges.toString()} 
+                icon={CheckCircle}
+              />
+              <KPICard 
+                title="Incorporated in EAC" 
+                value={eacData.incorporatedInEAC.toString()} 
+                icon={CheckCircle}
+              />
+              <KPICard 
                 title="Unincorporated Changes" 
                 value={eacData.unincorporatedChanges.toString()} 
+                delta={`${eacData.approvedChanges} approved - ${eacData.incorporatedInEAC} in EAC`}
+                trend={eacData.unincorporatedChanges > 0 ? "up" : "down"}
                 icon={AlertTriangle}
                 definitionKey="unincorporated-changes"
               />
@@ -2092,30 +2121,40 @@ export function CBOMLifecycle() {
                 </CardContent>
               </Card>
               
-              {/* Incorporation Funnel */}
+              {/* Incorporation Funnel - Uses actual changeEvents data */}
               <Card className="border border-gray-200">
                 <CardHeader className="py-3 px-4 border-b border-gray-100">
                   <CardTitle className="text-sm font-bold text-gray-800">Cost Change Incorporation Funnel</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
                   <div className="space-y-4">
-                    {[
-                      { label: "Identified BOM Cost Changes", value: 24, pct: 100, color: "bg-blue-500" },
-                      { label: "Validated Changes", value: 20, pct: 83, color: "bg-blue-400" },
-                      { label: "Approved Changes", value: 17, pct: 71, color: "bg-green-500" },
-                      { label: "Incorporated into EAC", value: 14, pct: 58, color: "bg-green-600" },
-                      { label: "Remaining Gap", value: 10, pct: 42, color: "bg-amber-500" }
-                    ].map((step, i) => (
-                      <div key={i} className="flex items-center gap-4">
-                        <div className="w-48 text-sm text-gray-700">{step.label}</div>
-                        <div className="flex-1 h-8 bg-gray-100 rounded-lg overflow-hidden relative">
-                          <div className={`h-full ${step.color} transition-all`} style={{ width: `${step.pct}%` }} />
-                          <span className="absolute inset-0 flex items-center justify-center text-sm font-medium text-gray-800">
-                            {step.value} ({step.pct}%)
-                          </span>
+                    {(() => {
+                      const totalChanges = changeEvents.length
+                      const validatedChanges = changeEvents.filter(e => e.status !== "Pending" || e.status === "Pending").length // All identified are validated for demo
+                      const approvedChanges = eacData.approvedChanges
+                      const incorporatedInEAC = eacData.incorporatedInEAC
+                      const unincorporatedGap = eacData.unincorporatedChanges
+                      
+                      const funnelSteps = [
+                        { label: "Identified BOM Cost Changes", value: totalChanges, pct: 100, color: "bg-blue-500" },
+                        { label: "Validated Changes", value: Math.round(totalChanges * 0.9), pct: 90, color: "bg-blue-400" },
+                        { label: "Approved Changes", value: approvedChanges, pct: Math.round((approvedChanges / totalChanges) * 100), color: "bg-green-500" },
+                        { label: "Incorporated into EAC", value: incorporatedInEAC, pct: Math.round((incorporatedInEAC / totalChanges) * 100), color: "bg-green-600" },
+                        { label: "Unincorporated (Gap)", value: unincorporatedGap, pct: Math.round((unincorporatedGap / totalChanges) * 100), color: "bg-amber-500" }
+                      ]
+                      
+                      return funnelSteps.map((step, i) => (
+                        <div key={i} className="flex items-center gap-4">
+                          <div className="w-48 text-sm text-gray-700">{step.label}</div>
+                          <div className="flex-1 h-8 bg-gray-100 rounded-lg overflow-hidden relative">
+                            <div className={`h-full ${step.color} transition-all`} style={{ width: `${Math.max(step.pct, 5)}%` }} />
+                            <span className="absolute inset-0 flex items-center justify-center text-sm font-medium text-gray-800">
+                              {step.value} ({step.pct}%)
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    })()}
                   </div>
                 </CardContent>
               </Card>
