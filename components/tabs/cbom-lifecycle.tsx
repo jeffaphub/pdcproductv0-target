@@ -148,30 +148,61 @@ function seededRandom(seed: number) {
 }
 
 // ===== DATA GENERATION =====
-function generateBOMHierarchy(program: string): BOMNode[] {
+// Returns BOM hierarchy AND lifecycle costs to ensure alignment
+function generateBOMHierarchy(program: string): { nodes: BOMNode[]; lifecycleCosts: { proposal: number; ebom: number; mbom: number; current: number } } {
   const seed = program.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
   const nodes: BOMNode[] = []
   
-  // First, generate all assemblies and their costs to properly roll up to program level
-  const assemblyData: { asm: string; asmSeed: number; baselineCost: number; currentCost: number; qty: number; qtyBaseline: number }[] = []
-  let totalAssemblyCurrentCost = 0
-  let totalAssemblyBaselineCost = 0
+  // First, generate all assemblies and their costs at each lifecycle stage
+  // This ensures costs roll up correctly and are consistent across all views
+  const assemblyData: { 
+    asm: string; asmSeed: number; 
+    proposalCost: number; ebomCost: number; mbomCost: number; currentCost: number;
+    qty: number; qtyBaseline: number 
+  }[] = []
+  
+  let totalProposal = 0
+  let totalEBOM = 0
+  let totalMBOM = 0
+  let totalCurrent = 0
   
   assemblies.forEach((asm, i) => {
     const asmSeed = seed + i * 100
-    const baselineCost = 3000000 + seededRandom(asmSeed) * 4000000
-    // Allow both increases and decreases vs baseline (0.85 to 1.15 multiplier)
-    const currentCost = baselineCost * (0.85 + seededRandom(asmSeed + 1) * 0.30)
     const qty = 1 + Math.floor(seededRandom(asmSeed + 2) * 3)
-    const qtyBaseline = 1 + Math.floor(seededRandom(asmSeed + 3) * 3)
+    const qtyBaseline = qty // Keep same qty for simplicity in lifecycle comparison
     
-    totalAssemblyCurrentCost += currentCost * qty
-    totalAssemblyBaselineCost += baselineCost * qtyBaseline
+    // Generate costs at each lifecycle stage with realistic progression
+    // Proposal -> eBOM: small changes (engineering refinements)
+    // eBOM -> mBOM: moderate changes (manufacturing considerations)
+    // mBOM -> Current: final adjustments (actuals, supplier updates)
+    const proposalUnitCost = 3000000 + seededRandom(asmSeed) * 4000000
+    const ebomMultiplier = 1 + (seededRandom(asmSeed + 10) - 0.45) * 0.08  // -3.6% to +4.4%
+    const mbomMultiplier = 1 + (seededRandom(asmSeed + 11) - 0.4) * 0.10   // -4% to +6%
+    const currentMultiplier = 1 + (seededRandom(asmSeed + 12) - 0.35) * 0.15 // -5.25% to +9.75%
     
-    assemblyData.push({ asm, asmSeed, baselineCost, currentCost, qty, qtyBaseline })
+    const ebomUnitCost = proposalUnitCost * ebomMultiplier
+    const mbomUnitCost = ebomUnitCost * mbomMultiplier
+    const currentUnitCost = mbomUnitCost * currentMultiplier
+    
+    totalProposal += proposalUnitCost * qty
+    totalEBOM += ebomUnitCost * qty
+    totalMBOM += mbomUnitCost * qty
+    totalCurrent += currentUnitCost * qty
+    
+    assemblyData.push({ 
+      asm, asmSeed, 
+      proposalCost: proposalUnitCost, 
+      ebomCost: ebomUnitCost, 
+      mbomCost: mbomUnitCost, 
+      currentCost: currentUnitCost,
+      qty, qtyBaseline 
+    })
   })
   
-  // Program level - use actual rolled-up costs from assemblies
+  // Store lifecycle costs for use across all components
+  const lifecycleCosts = { proposal: totalProposal, ebom: totalEBOM, mbom: totalMBOM, current: totalCurrent }
+  
+  // Program level - use actual rolled-up costs
   const programNode: BOMNode = {
     id: "prog-1",
     name: program,
@@ -184,8 +215,8 @@ function generateBOMHierarchy(program: string): BOMNode[] {
     unitCostBaseline: 0,
     extendedCost: 0,
     extendedCostBaseline: 0,
-    rolledUpCost: totalAssemblyCurrentCost,
-    rolledUpCostBaseline: totalAssemblyBaselineCost,
+    rolledUpCost: totalCurrent,
+    rolledUpCostBaseline: totalProposal,
     bomSource: "Current",
     revision: "Rev C",
     commodity: "System",
@@ -197,8 +228,8 @@ function generateBOMHierarchy(program: string): BOMNode[] {
   }
   nodes.push(programNode)
   
-// Assemblies - use pre-calculated data
-  assemblyData.forEach(({ asm, asmSeed, baselineCost, currentCost, qty, qtyBaseline }, i) => {
+// Assemblies - use pre-calculated data with lifecycle-aligned costs
+  assemblyData.forEach(({ asm, asmSeed, proposalCost, currentCost, qty, qtyBaseline }, i) => {
     const changeTypes: BOMNode["changeType"][] = ["none", "quantity", "substitution", "supplier", "price"]
     
     const asmNode: BOMNode = {
@@ -210,11 +241,11 @@ function generateBOMHierarchy(program: string): BOMNode[] {
       quantity: qty,
       quantityBaseline: qtyBaseline,
       unitCost: currentCost,
-      unitCostBaseline: baselineCost,
+      unitCostBaseline: proposalCost,
       extendedCost: currentCost * qty,
-      extendedCostBaseline: baselineCost * qtyBaseline,
+      extendedCostBaseline: proposalCost * qtyBaseline,
       rolledUpCost: currentCost * qty,
-      rolledUpCostBaseline: baselineCost * qtyBaseline,
+      rolledUpCostBaseline: proposalCost * qtyBaseline,
       bomSource: ["Proposal", "eBOM", "mBOM", "Current"][Math.floor(seededRandom(asmSeed + 4) * 4)] as BOMType,
       revision: `Rev ${String.fromCharCode(65 + Math.floor(seededRandom(asmSeed + 5) * 5))}`,
       commodity: commodities[i % commodities.length],
@@ -293,7 +324,7 @@ function generateBOMHierarchy(program: string): BOMNode[] {
     }
   })
   
-  return nodes
+  return { nodes, lifecycleCosts }
 }
 
 function generateChangeEvents(program: string, totalDelta: number, lifecycleDeltas: { proposal: number; ebom: number; mbom: number; current: number }): ChangeEvent[] {
@@ -391,33 +422,38 @@ function generateCostDrivers(program: string, totalDelta: number, totalCost: num
   const categories: DriverCategory[] = ["Quantity", "Substitution", "Supplier Price", "Make/Buy", "Routing/Labor", "Overhead", "Scrap/Yield", "Engineering", "Manufacturing", "Actuals"]
   const levels = ["Assembly", "Sub-Assembly", "Part"]
   
-  // Determine if overall program cost increased or decreased
   const isOverallIncrease = totalDelta > 0
-  const overallChangePercent = Math.abs(totalDelta / baselineCost)
+  const driverCount = 30
   
-  for (let i = 0; i < 30; i++) {
+  // First pass: generate raw weights for distributing the total delta
+  const rawWeights: number[] = []
+  let positiveWeightSum = 0
+  let negativeWeightSum = 0
+  
+  for (let i = 0; i < driverCount; i++) {
     const dSeed = seed + i * 43
-    const itemBaselineCost = 50000 + seededRandom(dSeed) * 500000
-    
-    // Align driver direction with program direction
-    // 70% of top drivers should move in same direction as program
+    // 70% of drivers move with program direction
     const movesWithProgram = seededRandom(dSeed + 10) < 0.7
+    const weight = (0.5 + seededRandom(dSeed + 20) * 1.5) * (movesWithProgram === isOverallIncrease ? 1 : -0.3)
+    rawWeights.push(weight)
+    if (weight > 0) positiveWeightSum += weight
+    else negativeWeightSum += Math.abs(weight)
+  }
+  
+  // Normalize weights so they sum to totalDelta
+  // For positive totalDelta: positive weights get most of delta, negative weights offset
+  // Net effect should equal totalDelta
+  const scaleFactor = Math.abs(totalDelta) / (positiveWeightSum + negativeWeightSum * 0.3)
+  
+  for (let i = 0; i < driverCount; i++) {
+    const dSeed = seed + i * 43
     
-    let multiplier: number
-    if (isOverallIncrease) {
-      // Program increased - most drivers should increase
-      multiplier = movesWithProgram 
-        ? 1.05 + seededRandom(dSeed + 1) * 0.35  // +5% to +40% increase
-        : 0.85 + seededRandom(dSeed + 1) * 0.12  // -15% to -3% decrease (cost savings)
-    } else {
-      // Program decreased - most drivers should decrease
-      multiplier = movesWithProgram
-        ? 0.65 + seededRandom(dSeed + 1) * 0.30  // -35% to -5% decrease
-        : 1.03 + seededRandom(dSeed + 1) * 0.20  // +3% to +23% increase
-    }
+    // Calculate delta based on normalized weight
+    const delta = rawWeights[i] * scaleFactor
     
-    const itemCurrentCost = itemBaselineCost * multiplier
-    const delta = itemCurrentCost - itemBaselineCost
+    // Baseline cost is proportional to the absolute delta contribution
+    const itemBaselineCost = Math.abs(delta) * (3 + seededRandom(dSeed) * 5)
+    const itemCurrentCost = itemBaselineCost + delta
     
     // Select appropriate driver detail based on delta direction
     const increaseDetails = [
@@ -442,10 +478,10 @@ function generateCostDrivers(program: string, totalDelta: number, totalCost: num
     drivers.push({
       item: `${assemblies[i % assemblies.length]} ${i < 10 ? "" : `Sub-Asm ${Math.floor(i / 10)}`}`,
       level: levels[Math.floor(seededRandom(dSeed + 2) * 3)],
-      baselineCost: itemBaselineCost,
-      currentCost: itemCurrentCost,
+      baselineCost: Math.max(10000, itemBaselineCost),
+      currentCost: Math.max(10000, itemCurrentCost),
       delta,
-      deltaPercent: (delta / itemBaselineCost) * 100,
+      deltaPercent: itemBaselineCost > 0 ? (delta / itemBaselineCost) * 100 : 0,
       driverCategory: categories[Math.floor(seededRandom(dSeed + 3) * categories.length)],
       driverDetail: detailOptions[Math.floor(seededRandom(dSeed + 4) * detailOptions.length)],
       sourceBOM: "Proposal",
@@ -640,21 +676,14 @@ export function CBOMLifecycle() {
   const [selectedChangeEvent, setSelectedChangeEvent] = useState<ChangeEvent | null>(null)
   const [changeCompareDrawerOpen, setChangeCompareDrawerOpen] = useState(false)
   
-  // Data generation
-  const bomNodes = useMemo(() => generateBOMHierarchy(selectedProgram), [selectedProgram])
+  // Data generation - returns both BOM nodes and lifecycle costs from single source of truth
+  const bomData = useMemo(() => generateBOMHierarchy(selectedProgram), [selectedProgram])
+  const bomNodes = bomData.nodes
+  const lifecycleCosts = bomData.lifecycleCosts
   
   // Computed data
   const programNode = bomNodes.find(n => n.level === "program")!
   const assemblyNodes = bomNodes.filter(n => n.level === "assembly")
-  
-  // Calculate lifecycle stage costs first (used by multiple components)
-  const lifecycleCosts = useMemo(() => {
-    const proposalCost = programNode.rolledUpCostBaseline * 0.95
-    const eBOMCost = programNode.rolledUpCostBaseline * 0.98
-    const mBOMCost = programNode.rolledUpCostBaseline * 1.02
-    const currentCost = programNode.rolledUpCost
-    return { proposal: proposalCost, ebom: eBOMCost, mbom: mBOMCost, current: currentCost }
-  }, [programNode])
   
   // Lifecycle stages for the ribbon
   const lifecycleStages: LifecycleStage[] = useMemo(() => {
@@ -714,10 +743,9 @@ export function CBOMLifecycle() {
     }
   }
   
-  const totalCost = programNode.rolledUpCost
-  // Use the actual Proposal stage cost (which is rolledUpCostBaseline * 0.95) to match what's shown in the lifecycle ribbon
-  const proposalBaselineCost = programNode.rolledUpCostBaseline * 0.95
-  const baselineCost = proposalBaselineCost
+  // Use lifecycle costs directly - these are the single source of truth
+  const totalCost = lifecycleCosts.current
+  const baselineCost = lifecycleCosts.proposal
   const totalDelta = totalCost - baselineCost
   const totalDeltaPercent = (totalDelta / baselineCost) * 100
   
@@ -1614,6 +1642,15 @@ export function CBOMLifecycle() {
                       ))}
                     </tbody>
                     <tfoot className="bg-gray-100 border-t-2 border-gray-300">
+                      <tr className="border-b border-gray-200">
+                        <td className="p-2 text-gray-600 text-sm" colSpan={2}>Sum of Drivers (shown above)</td>
+                        <td className="p-2 text-right text-gray-500 text-sm">{formatCurrency(costDrivers.reduce((sum, d) => sum + d.baselineCost, 0))}</td>
+                        <td className="p-2 text-right text-gray-600 text-sm">{formatCurrency(costDrivers.reduce((sum, d) => sum + d.currentCost, 0))}</td>
+                        <td className={`p-2 text-right text-sm ${costDrivers.reduce((sum, d) => sum + d.delta, 0) > 0 ? "text-red-600" : "text-green-600"}`}>
+                          {formatCurrency(costDrivers.reduce((sum, d) => sum + d.delta, 0))}
+                        </td>
+                        <td className="p-2" colSpan={5}></td>
+                      </tr>
                       <tr>
                         <td className="p-3 font-bold text-gray-900" colSpan={2}>TOTAL (Program Level)</td>
                         <td className="p-3 text-right font-bold text-gray-700">{formatCurrency(baselineCost)}</td>
@@ -1851,6 +1888,17 @@ export function CBOMLifecycle() {
                         </tr>
                       ))}
                     </tbody>
+                    <tfoot className="bg-gray-100 border-t-2 border-gray-300">
+                      <tr>
+                        <td className="p-2 font-bold text-gray-900 text-sm" colSpan={6}>Total Cost Impact (All Events)</td>
+                        <td className={`p-2 text-right font-bold text-sm ${changeEvents.reduce((sum, e) => sum + e.costImpact, 0) > 0 ? "text-red-600" : "text-green-600"}`}>
+                          {formatCurrency(changeEvents.reduce((sum, e) => sum + e.costImpact, 0))}
+                        </td>
+                        <td className="p-2" colSpan={3}>
+                          <span className="text-[10px] text-gray-500">vs Program Delta: {formatCurrency(totalDelta)}</span>
+                        </td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </CardContent>
