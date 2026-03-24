@@ -229,15 +229,36 @@ function generateTimeBuckets(weeks: number = 24, program: string = "F-35"): Time
   return buckets
 }
 
-function generateAssemblies(program: string): Assembly[] {
+function generateAssemblies(program: string, timeBuckets: TimeBucket[]): Assembly[] {
   const programSeed = program.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
+  
+  // Find program-level shortage windows from timeBuckets for alignment
+  const programShortageWeeks = timeBuckets
+    .map((b, i) => b.isShortageWindow ? i : -1)
+    .filter(i => i >= 0)
+  const hasAnyProgramShortage = programShortageWeeks.length > 0
+  const programShortageStart = hasAnyProgramShortage ? programShortageWeeks[0] : null
+  const programShortageEnd = hasAnyProgramShortage ? programShortageWeeks[programShortageWeeks.length - 1] : null
   
   return assemblies.map((name, i) => {
     const asmSeed = programSeed + i * 17
-    // Which assemblies have shortage varies by program
-    const hasShortage = seededRandom(asmSeed) > 0.35
-    const shortageStart = hasShortage ? 4 + Math.floor(seededRandom(asmSeed + 1) * 8) : null
-    const recoveryWeekNum = hasShortage ? shortageStart! + 4 + Math.floor(seededRandom(asmSeed + 2) * 6) : null
+    
+    // Only create assembly shortages if program-level shows shortages
+    // Then distribute which assemblies are affected based on seed
+    const hasShortage = hasAnyProgramShortage && seededRandom(asmSeed) > 0.4
+    
+    // Align assembly shortage timing with program-level shortage window
+    let shortageStart: number | null = null
+    let recoveryWeekNum: number | null = null
+    
+    if (hasShortage && programShortageStart !== null && programShortageEnd !== null) {
+      // Assembly shortage starts within program shortage window (with some variance)
+      const windowSize = Math.max(1, programShortageEnd - programShortageStart)
+      const offsetInWindow = Math.floor(seededRandom(asmSeed + 1) * Math.min(windowSize, 3))
+      shortageStart = programShortageStart + offsetInWindow
+      // Recovery is 3-6 weeks after start, but not beyond program recovery
+      recoveryWeekNum = Math.min(programShortageEnd + 2, shortageStart + 3 + Math.floor(seededRandom(asmSeed + 2) * 4))
+    }
     
     // Suppliers exposed vary by program
     const supplierIdx1 = Math.floor(seededRandom(asmSeed + 3) * suppliers.length)
@@ -440,8 +461,9 @@ export function MaterialLineOfBalance() {
   const [selectedWeek, setSelectedWeek] = useState<number | null>(null)
   
   // Generate mock data - all vary by program selection
+  // IMPORTANT: timeBuckets must be generated first, then passed to assemblies for shortage alignment
   const timeBuckets = useMemo(() => generateTimeBuckets(parseInt(timeWindow), selectedProgram), [timeWindow, selectedProgram])
-  const assemblyList = useMemo(() => generateAssemblies(selectedProgram), [selectedProgram])
+  const assemblyList = useMemo(() => generateAssemblies(selectedProgram, timeBuckets), [selectedProgram, timeBuckets])
   const partNumbers = useMemo(() => generatePartNumbers(assemblyList, selectedProgram), [assemblyList, selectedProgram])
   const activities = useMemo(() => generateActivities(partNumbers, assemblyList), [partNumbers, assemblyList])
   const upcomingShortages = useMemo(() => generateUpcomingShortages(assemblyList), [assemblyList])
