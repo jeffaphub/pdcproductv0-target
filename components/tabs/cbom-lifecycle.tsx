@@ -671,6 +671,7 @@ export function CBOMLifecycle() {
   const [compareMode, setCompareMode] = useState<CompareMode>("baseline")
   const [selectedNode, setSelectedNode] = useState<BOMNode | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [showVisualGuide, setShowVisualGuide] = useState(false)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(["prog-1"]))
   const [lifecycleComparePath, setLifecycleComparePath] = useState<LifecycleComparePath>("proposal-current")
   const [selectedChangeEvent, setSelectedChangeEvent] = useState<ChangeEvent | null>(null)
@@ -925,6 +926,7 @@ export function CBOMLifecycle() {
             </div>
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-400">Last refresh: {new Date().toLocaleTimeString()}</span>
+              <Button variant="outline" size="sm" onClick={() => setShowVisualGuide(true)}><FileText className="w-4 h-4 mr-1" /> Visual Guide</Button>
               <Button variant="outline" size="sm"><RefreshCw className="w-4 h-4 mr-1" /> Refresh</Button>
               <Button variant="outline" size="sm"><Download className="w-4 h-4 mr-1" /> Export</Button>
               <Button variant="outline" size="sm"><Share2 className="w-4 h-4 mr-1" /> Share</Button>
