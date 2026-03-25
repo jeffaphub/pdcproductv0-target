@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Printer, Download, ArrowLeft } from "lucide-react"
+import { Printer, ArrowLeft } from "lucide-react"
 import Link from "next/link"
 
 export default function CBOMVisualGuidePage() {
@@ -33,7 +33,7 @@ export default function CBOMVisualGuidePage() {
         {/* Title Page */}
         <div className="text-center mb-12 print:mb-8">
           <h1 className="text-4xl font-bold text-gray-900 mb-4">CBOM - BOM Lifecycle</h1>
-          <h2 className="text-2xl text-gray-600 mb-2">Visual Guide & Tab Descriptions</h2>
+          <h2 className="text-2xl text-gray-600 mb-2">Visual Guide and Tab Descriptions</h2>
           <p className="text-gray-500">Unit Cost Requirements Dashboard</p>
           <p className="text-sm text-gray-400 mt-4">Generated: {new Date().toLocaleDateString()}</p>
         </div>
@@ -50,7 +50,7 @@ export default function CBOMVisualGuidePage() {
         </section>
 
         {/* Tab 1: Program Cost Overview */}
-        <Card className="mb-8 print:break-inside-avoid">
+        <Card className="mb-8 break-inside-avoid">
           <CardHeader className="bg-blue-50">
             <CardTitle className="text-xl text-blue-900">Tab 1: Program Cost Overview</CardTitle>
           </CardHeader>
@@ -92,7 +92,7 @@ export default function CBOMVisualGuidePage() {
         </Card>
 
         {/* Tab 2: Costed BOM Explorer */}
-        <Card className="mb-8 print:break-inside-avoid">
+        <Card className="mb-8 break-inside-avoid">
           <CardHeader className="bg-green-50">
             <CardTitle className="text-xl text-green-900">Tab 2: Costed BOM Explorer</CardTitle>
           </CardHeader>
@@ -102,7 +102,7 @@ export default function CBOMVisualGuidePage() {
             <div className="space-y-4">
               <div className="border-l-4 border-green-500 pl-4">
                 <h4 className="font-semibold text-gray-900">Expandable Tree Table</h4>
-                <p className="text-gray-700 text-sm">Hierarchical BOM structure (Program &gt; Assembly &gt; Sub-Assembly &gt; Part) with expand/collapse controls. Each row shows part number, quantity, unit cost, extended cost, and cost delta.</p>
+                <p className="text-gray-700 text-sm">Hierarchical BOM structure (Program, Assembly, Sub-Assembly, Part) with expand/collapse controls. Each row shows part number, quantity, unit cost, extended cost, and cost delta.</p>
                 <p className="text-gray-500 text-xs mt-1"><strong>Story:</strong> "Where exactly in the product structure is cost variance occurring?"</p>
               </div>
 
@@ -122,9 +122,9 @@ export default function CBOMVisualGuidePage() {
         </Card>
 
         {/* Tab 3: Cost Variance & Drivers */}
-        <Card className="mb-8 print:break-inside-avoid">
+        <Card className="mb-8 break-inside-avoid">
           <CardHeader className="bg-purple-50">
-            <CardTitle className="text-xl text-purple-900">Tab 3: Cost Variance & Drivers</CardTitle>
+            <CardTitle className="text-xl text-purple-900">Tab 3: Cost Variance and Drivers</CardTitle>
           </CardHeader>
           <CardContent className="pt-4">
             <p className="text-sm text-gray-600 italic mb-4">Analytical breakdown of what is driving cost variance</p>
@@ -158,7 +158,7 @@ export default function CBOMVisualGuidePage() {
         </Card>
 
         {/* Tab 4: BOM Cost Change Traceability */}
-        <Card className="mb-8 print:break-inside-avoid">
+        <Card className="mb-8 break-inside-avoid">
           <CardHeader className="bg-amber-50">
             <CardTitle className="text-xl text-amber-900">Tab 4: BOM Cost Change Traceability</CardTitle>
           </CardHeader>
@@ -194,7 +194,7 @@ export default function CBOMVisualGuidePage() {
         </Card>
 
         {/* Tab 5: EAC / Forecast Alignment */}
-        <Card className="mb-8 print:break-inside-avoid">
+        <Card className="mb-8 break-inside-avoid">
           <CardHeader className="bg-red-50">
             <CardTitle className="text-xl text-red-900">Tab 5: EAC / Forecast Alignment</CardTitle>
           </CardHeader>
@@ -230,7 +230,7 @@ export default function CBOMVisualGuidePage() {
         </Card>
 
         {/* Role-Based Summary */}
-        <section className="mb-10 print:break-inside-avoid">
+        <section className="mb-10 break-inside-avoid">
           <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-200 pb-2 mb-4">Role-Based Tab Recommendations</h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
@@ -245,12 +245,12 @@ export default function CBOMVisualGuidePage() {
                 <tr>
                   <td className="border border-gray-300 p-2 font-medium">Program Manager</td>
                   <td className="border border-gray-300 p-2">Overview, EAC Alignment</td>
-                  <td className="border border-gray-300 p-2">Are we on budget? What's the forecast risk?</td>
+                  <td className="border border-gray-300 p-2">Are we on budget? What is the forecast risk?</td>
                 </tr>
                 <tr className="bg-gray-50">
                   <td className="border border-gray-300 p-2 font-medium">Cost Analyst</td>
-                  <td className="border border-gray-300 p-2">Variance & Drivers, Traceability</td>
-                  <td className="border border-gray-300 p-2">What's driving variance? Can I trace each change?</td>
+                  <td className="border border-gray-300 p-2">Variance and Drivers, Traceability</td>
+                  <td className="border border-gray-300 p-2">What is driving variance? Can I trace each change?</td>
                 </tr>
                 <tr>
                   <td className="border border-gray-300 p-2 font-medium">BOM Manager</td>
@@ -260,11 +260,11 @@ export default function CBOMVisualGuidePage() {
                 <tr className="bg-gray-50">
                   <td className="border border-gray-300 p-2 font-medium">Finance Controller</td>
                   <td className="border border-gray-300 p-2">EAC Alignment</td>
-                  <td className="border border-gray-300 p-2">Are BOM changes in the forecast? What's the gap?</td>
+                  <td className="border border-gray-300 p-2">Are BOM changes in the forecast? What is the gap?</td>
                 </tr>
                 <tr>
                   <td className="border border-gray-300 p-2 font-medium">Engineering Lead</td>
-                  <td className="border border-gray-300 p-2">Explorer, Variance & Drivers</td>
+                  <td className="border border-gray-300 p-2">Explorer, Variance and Drivers</td>
                   <td className="border border-gray-300 p-2">Which designs are driving cost? What can we optimize?</td>
                 </tr>
               </tbody>
@@ -284,7 +284,7 @@ export default function CBOMVisualGuidePage() {
         @media print {
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .print\\:hidden { display: none !important; }
-          .print\\:break-inside-avoid { break-inside: avoid; }
+          .break-inside-avoid { break-inside: avoid; }
           .print\\:mb-8 { margin-bottom: 2rem; }
           .print\\:p-4 { padding: 1rem; }
         }
