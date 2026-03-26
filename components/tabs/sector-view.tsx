@@ -24,6 +24,20 @@ import {
   Filter,
   ChevronRight
 } from "lucide-react"
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  ComposedChart,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip
+} from "recharts"
 
 // Types
 type Status = "green" | "yellow" | "red"
