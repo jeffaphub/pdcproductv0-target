@@ -51,10 +51,14 @@ interface MetricCell {
   reason: string
 }
 
+type Tier = "1" | "2" | "3"
+
 interface Program {
   id: string
   name: string
   sector: string
+  tier: Tier
+  revenue: number // Annual revenue in millions
   programManager: string
   overallHealth: MetricCell
   otd: MetricCell
@@ -74,230 +78,197 @@ interface Program {
   nextReviewDate: string
 }
 
-// Mock data generator
+// Mock data generator with 55 programs across 3 tiers
 const generateMockPrograms = (): Program[] => {
-  const programs: Program[] = [
-    {
-      id: "PRG-001",
-      name: "Program Alpha",
-      sector: "Defense Systems",
-      programManager: "J. Martinez",
-      overallHealth: { status: "green", value: "On Track", threshold: "All metrics green/yellow", trend: "flat", reason: "Strong performance across all metrics" },
-      otd: { status: "green", value: "97.2%", threshold: ">=95%", trend: "up", reason: "OTD improved 1.2% vs prior month" },
-      costVariance: { status: "green", value: "+0.3%", threshold: "±1%", trend: "flat", reason: "Cost within target range" },
-      quality: { status: "green", value: "0.8 DPM", threshold: "<2 DPM", trend: "down", reason: "Defect rate improving" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "No safety concerns" },
-      supplyStability: { status: "green", value: "Stable", threshold: "No critical disruptions", trend: "flat", reason: "All suppliers performing" },
-      scheduleAdherence: { status: "green", value: "On Plan", threshold: "No slip", trend: "flat", reason: "Schedule maintained" },
-      margin: { status: "green", value: "+2.1%", threshold: ">=0%", trend: "up", reason: "Margin expanding" },
-      customerHealth: { status: "green", value: "Normal", threshold: "No escalations", trend: "flat", reason: "Customer satisfied" },
-      riskBurndown: { status: "green", value: "-12%", threshold: "Decreasing", trend: "down", reason: "Risks being retired" },
-      staffing: { status: "green", value: "98%", threshold: ">=95%", trend: "flat", reason: "Fully staffed" },
-      cash: { status: "green", value: "On Target", threshold: "Within plan", trend: "flat", reason: "Working capital healthy" },
-      topIssues: ["Minor tooling wear on Line 3", "Pending ECO approval"],
-      topActions: ["Tooling replacement scheduled", "ECO review meeting Thursday"],
-      executiveSummary: "Program Alpha continues to perform strongly across all dimensions. No executive intervention required.",
-      nextReviewDate: "2024-02-15"
-    },
-    {
-      id: "PRG-002",
-      name: "Program Bravo",
-      sector: "Avionics",
-      programManager: "S. Chen",
-      overallHealth: { status: "green", value: "On Track", threshold: "All metrics green/yellow", trend: "up", reason: "Continuous improvement trend" },
-      otd: { status: "green", value: "96.8%", threshold: ">=95%", trend: "up", reason: "OTD above target" },
-      costVariance: { status: "yellow", value: "+2.4%", threshold: "±1%", trend: "up", reason: "Material cost pressure, monitoring" },
-      quality: { status: "green", value: "1.2 DPM", threshold: "<2 DPM", trend: "flat", reason: "Quality stable" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "Strong safety culture" },
-      supplyStability: { status: "green", value: "Stable", threshold: "No critical disruptions", trend: "flat", reason: "Supply chain healthy" },
-      scheduleAdherence: { status: "green", value: "On Plan", threshold: "No slip", trend: "flat", reason: "Deliveries on time" },
-      margin: { status: "yellow", value: "-0.8%", threshold: ">=0%", trend: "down", reason: "Margin pressure from materials" },
-      customerHealth: { status: "green", value: "Normal", threshold: "No escalations", trend: "flat", reason: "Positive feedback received" },
-      riskBurndown: { status: "green", value: "-8%", threshold: "Decreasing", trend: "down", reason: "Risk reduction on track" },
-      staffing: { status: "green", value: "97%", threshold: ">=95%", trend: "flat", reason: "Team stable" },
-      cash: { status: "green", value: "On Target", threshold: "Within plan", trend: "flat", reason: "Cash flow normal" },
-      topIssues: ["Material cost increase 3.2%", "Single-source component risk"],
-      topActions: ["Alternate supplier qualification", "Price renegotiation in progress"],
-      executiveSummary: "Program Bravo delivery strong but experiencing material cost headwinds. Mitigation actions underway.",
-      nextReviewDate: "2024-02-12"
-    },
-    {
-      id: "PRG-003",
-      name: "Program Falcon",
-      sector: "Defense Systems",
-      programManager: "R. Thompson",
-      overallHealth: { status: "yellow", value: "Watch", threshold: "1-2 yellow metrics", trend: "down", reason: "Supply and schedule concerns emerging" },
-      otd: { status: "yellow", value: "92.1%", threshold: ">=95%", trend: "down", reason: "OTD declined due to supply issues" },
-      costVariance: { status: "green", value: "+0.7%", threshold: "±1%", trend: "flat", reason: "Cost controlled" },
-      quality: { status: "green", value: "1.5 DPM", threshold: "<2 DPM", trend: "flat", reason: "Quality acceptable" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "No issues" },
-      supplyStability: { status: "yellow", value: "At Risk", threshold: "No critical disruptions", trend: "down", reason: "Key supplier delivery slips" },
-      scheduleAdherence: { status: "yellow", value: "Minor Slip", threshold: "No slip", trend: "down", reason: "3-day schedule slip risk" },
-      margin: { status: "green", value: "+1.2%", threshold: ">=0%", trend: "flat", reason: "Margin maintained" },
-      customerHealth: { status: "green", value: "Normal", threshold: "No escalations", trend: "flat", reason: "Customer aware of risk" },
-      riskBurndown: { status: "yellow", value: "+2%", threshold: "Decreasing", trend: "up", reason: "New supply risk added" },
-      staffing: { status: "green", value: "96%", threshold: ">=95%", trend: "flat", reason: "Adequate staffing" },
-      cash: { status: "green", value: "On Target", threshold: "Within plan", trend: "flat", reason: "Cash normal" },
-      topIssues: ["Supplier ABC delivery 5 days late", "Schedule buffer consumed", "Component shortage looming"],
-      topActions: ["Expedite POs with ABC", "Recovery plan developed", "Buffer rebuild strategy"],
-      executiveSummary: "Program Falcon experiencing supply chain pressure affecting schedule. Recovery actions in place, close monitoring required.",
-      nextReviewDate: "2024-02-08"
-    },
-    {
-      id: "PRG-004",
-      name: "Program Orion",
-      sector: "Space Systems",
-      programManager: "A. Patel",
-      overallHealth: { status: "red", value: "At Risk", threshold: "Critical metric red", trend: "down", reason: "Multiple red metrics require intervention" },
-      otd: { status: "red", value: "84.3%", threshold: ">=95%", trend: "down", reason: "Significant OTD miss, customer impacted" },
-      costVariance: { status: "red", value: "+4.8%", threshold: "±1%", trend: "up", reason: "Cost overrun accelerating" },
-      quality: { status: "yellow", value: "2.8 DPM", threshold: "<2 DPM", trend: "up", reason: "Quality degradation noted" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "Safety maintained" },
-      supplyStability: { status: "red", value: "Critical", threshold: "No critical disruptions", trend: "down", reason: "3 critical parts constraining production" },
-      scheduleAdherence: { status: "red", value: "Major Slip", threshold: "No slip", trend: "down", reason: "2-week schedule delay" },
-      margin: { status: "red", value: "-3.2%", threshold: ">=0%", trend: "down", reason: "Margin erosion significant" },
-      customerHealth: { status: "yellow", value: "Escalated", threshold: "No escalations", trend: "down", reason: "Customer VP engaged" },
-      riskBurndown: { status: "red", value: "+15%", threshold: "Decreasing", trend: "up", reason: "Risk exposure increasing" },
-      staffing: { status: "yellow", value: "88%", threshold: ">=95%", trend: "down", reason: "Key engineer departures" },
-      cash: { status: "yellow", value: "Off Plan", threshold: "Within plan", trend: "down", reason: "Working capital strained" },
-      topIssues: ["Critical part shortage - 3 SKUs", "Customer escalation active", "Schedule slip 2 weeks", "Cost overrun 4.8%", "2 key engineers resigned"],
-      topActions: ["War room established", "Executive supplier calls daily", "Recovery plan v3 in review", "Hiring fast-track approved"],
-      executiveSummary: "Program Orion requires immediate executive intervention. Multiple critical issues converging. Recovery plan under revision.",
-      nextReviewDate: "2024-02-05"
-    },
-    {
-      id: "PRG-005",
-      name: "Program Atlas",
-      sector: "Communications",
-      programManager: "M. Williams",
-      overallHealth: { status: "green", value: "On Track", threshold: "All metrics green/yellow", trend: "up", reason: "Strong execution" },
-      otd: { status: "green", value: "98.1%", threshold: ">=95%", trend: "up", reason: "Best-in-class OTD" },
-      costVariance: { status: "green", value: "-0.5%", threshold: "±1%", trend: "down", reason: "Under budget" },
-      quality: { status: "green", value: "0.5 DPM", threshold: "<2 DPM", trend: "down", reason: "Excellent quality" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "Zero incidents" },
-      supplyStability: { status: "green", value: "Stable", threshold: "No critical disruptions", trend: "flat", reason: "Dual-sourced key parts" },
-      scheduleAdherence: { status: "green", value: "Ahead", threshold: "No slip", trend: "up", reason: "2 days ahead of plan" },
-      margin: { status: "green", value: "+3.5%", threshold: ">=0%", trend: "up", reason: "Strong margin performance" },
-      customerHealth: { status: "green", value: "Excellent", threshold: "No escalations", trend: "up", reason: "Customer commendation received" },
-      riskBurndown: { status: "green", value: "-20%", threshold: "Decreasing", trend: "down", reason: "Aggressive risk retirement" },
-      staffing: { status: "green", value: "100%", threshold: ">=95%", trend: "flat", reason: "Full complement" },
-      cash: { status: "green", value: "Ahead", threshold: "Within plan", trend: "up", reason: "Strong cash generation" },
-      topIssues: ["None critical"],
-      topActions: ["Best practice documentation", "Cross-training initiative"],
-      executiveSummary: "Program Atlas is a top performer. Consider as benchmark for other programs.",
-      nextReviewDate: "2024-02-20"
-    },
-    {
-      id: "PRG-006",
-      name: "Program Phoenix",
-      sector: "Defense Systems",
-      programManager: "K. Johnson",
-      overallHealth: { status: "yellow", value: "Watch", threshold: "1-2 yellow metrics", trend: "flat", reason: "Cost concerns need attention" },
-      otd: { status: "green", value: "95.5%", threshold: ">=95%", trend: "flat", reason: "OTD at target" },
-      costVariance: { status: "yellow", value: "+2.1%", threshold: "±1%", trend: "up", reason: "Labor cost increase" },
-      quality: { status: "green", value: "1.8 DPM", threshold: "<2 DPM", trend: "flat", reason: "Quality acceptable" },
-      safety: { status: "yellow", value: "Near-miss", threshold: "0 recordables", trend: "down", reason: "Near-miss incident under review" },
-      supplyStability: { status: "green", value: "Stable", threshold: "No critical disruptions", trend: "flat", reason: "Supply normal" },
-      scheduleAdherence: { status: "green", value: "On Plan", threshold: "No slip", trend: "flat", reason: "On schedule" },
-      margin: { status: "yellow", value: "-0.3%", threshold: ">=0%", trend: "down", reason: "Slight margin erosion" },
-      customerHealth: { status: "green", value: "Normal", threshold: "No escalations", trend: "flat", reason: "No concerns" },
-      riskBurndown: { status: "green", value: "-5%", threshold: "Decreasing", trend: "down", reason: "Risks reducing" },
-      staffing: { status: "green", value: "95%", threshold: ">=95%", trend: "flat", reason: "At minimum threshold" },
-      cash: { status: "green", value: "On Target", threshold: "Within plan", trend: "flat", reason: "Cash normal" },
-      topIssues: ["Labor cost creep", "Safety near-miss investigation", "Margin pressure"],
-      topActions: ["Overtime reduction plan", "Safety corrective action", "Cost reduction workshop"],
-      executiveSummary: "Program Phoenix operationally sound but experiencing cost pressure. Safety near-miss requires attention.",
-      nextReviewDate: "2024-02-14"
-    },
-    {
-      id: "PRG-007",
-      name: "Program Triton",
-      sector: "Maritime",
-      programManager: "L. Garcia",
-      overallHealth: { status: "red", value: "At Risk", threshold: "Critical metric red", trend: "down", reason: "Supply crisis driving multiple issues" },
-      otd: { status: "red", value: "78.5%", threshold: ">=95%", trend: "down", reason: "Major OTD miss" },
-      costVariance: { status: "yellow", value: "+2.8%", threshold: "±1%", trend: "up", reason: "Expedite costs adding up" },
-      quality: { status: "green", value: "1.1 DPM", threshold: "<2 DPM", trend: "flat", reason: "Quality maintained despite issues" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "Safety OK" },
-      supplyStability: { status: "red", value: "Crisis", threshold: "No critical disruptions", trend: "down", reason: "Supplier bankruptcy impacting 12 parts" },
-      scheduleAdherence: { status: "red", value: "Critical Slip", threshold: "No slip", trend: "down", reason: "3-week delay confirmed" },
-      margin: { status: "yellow", value: "-1.5%", threshold: ">=0%", trend: "down", reason: "Margin eroding from expedites" },
-      customerHealth: { status: "red", value: "Critical", threshold: "No escalations", trend: "down", reason: "Customer CEO escalation" },
-      riskBurndown: { status: "red", value: "+25%", threshold: "Decreasing", trend: "up", reason: "Major new risks materialized" },
-      staffing: { status: "yellow", value: "91%", threshold: ">=95%", trend: "down", reason: "Staff burnout concerns" },
-      cash: { status: "yellow", value: "Off Plan", threshold: "Within plan", trend: "down", reason: "Expedite spend impacting cash" },
-      topIssues: ["Supplier XYZ bankruptcy", "12 parts without source", "Customer CEO escalation", "3-week schedule slip", "Team burnout risk"],
-      topActions: ["Emergency supplier qualification", "Executive customer meeting scheduled", "Temporary staff augmentation", "Recovery plan v2"],
-      executiveSummary: "Program Triton in crisis mode due to supplier bankruptcy. Requires immediate executive support and customer management.",
-      nextReviewDate: "2024-02-03"
-    },
-    {
-      id: "PRG-008",
-      name: "Program Vanguard",
-      sector: "Avionics",
-      programManager: "D. Brown",
-      overallHealth: { status: "green", value: "On Track", threshold: "All metrics green/yellow", trend: "flat", reason: "Steady performance" },
-      otd: { status: "green", value: "96.2%", threshold: ">=95%", trend: "flat", reason: "OTD stable" },
-      costVariance: { status: "green", value: "+0.2%", threshold: "±1%", trend: "flat", reason: "Cost on target" },
-      quality: { status: "green", value: "1.4 DPM", threshold: "<2 DPM", trend: "flat", reason: "Quality good" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "No issues" },
-      supplyStability: { status: "yellow", value: "Watch", threshold: "No critical disruptions", trend: "down", reason: "One supplier showing stress signs" },
-      scheduleAdherence: { status: "green", value: "On Plan", threshold: "No slip", trend: "flat", reason: "On track" },
-      margin: { status: "green", value: "+1.8%", threshold: ">=0%", trend: "flat", reason: "Healthy margin" },
-      customerHealth: { status: "green", value: "Normal", threshold: "No escalations", trend: "flat", reason: "Relationship good" },
-      riskBurndown: { status: "green", value: "-10%", threshold: "Decreasing", trend: "down", reason: "Risks reducing" },
-      staffing: { status: "green", value: "97%", threshold: ">=95%", trend: "flat", reason: "Team stable" },
-      cash: { status: "green", value: "On Target", threshold: "Within plan", trend: "flat", reason: "Normal" },
-      topIssues: ["Supplier DEF showing late patterns"],
-      topActions: ["Supplier performance review scheduled", "Backup source evaluation"],
-      executiveSummary: "Program Vanguard performing well with minor supply watch item. No intervention needed.",
-      nextReviewDate: "2024-02-18"
-    },
-    {
-      id: "PRG-009",
-      name: "Program Sentinel",
-      sector: "Space Systems",
-      programManager: "E. Wilson",
-      overallHealth: { status: "yellow", value: "Watch", threshold: "1-2 yellow metrics", trend: "down", reason: "Quality and staffing concerns" },
-      otd: { status: "green", value: "95.8%", threshold: ">=95%", trend: "flat", reason: "OTD acceptable" },
-      costVariance: { status: "green", value: "+0.9%", threshold: "±1%", trend: "flat", reason: "Cost within range" },
-      quality: { status: "yellow", value: "2.5 DPM", threshold: "<2 DPM", trend: "up", reason: "Quality trending wrong direction" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "Safe operations" },
-      supplyStability: { status: "green", value: "Stable", threshold: "No critical disruptions", trend: "flat", reason: "Supply OK" },
-      scheduleAdherence: { status: "green", value: "On Plan", threshold: "No slip", trend: "flat", reason: "Schedule maintained" },
-      margin: { status: "green", value: "+1.1%", threshold: ">=0%", trend: "flat", reason: "Margin OK" },
-      customerHealth: { status: "yellow", value: "Concerned", threshold: "No escalations", trend: "down", reason: "Customer noted quality concerns" },
-      riskBurndown: { status: "yellow", value: "Flat", threshold: "Decreasing", trend: "flat", reason: "Not retiring risks as planned" },
-      staffing: { status: "yellow", value: "89%", threshold: ">=95%", trend: "down", reason: "Struggling to fill positions" },
-      cash: { status: "green", value: "On Target", threshold: "Within plan", trend: "flat", reason: "Cash OK" },
-      topIssues: ["Quality trend degrading", "Customer quality concern voiced", "3 open positions unfilled"],
-      topActions: ["Root cause analysis on quality", "Customer quality review meeting", "Accelerated hiring"],
-      executiveSummary: "Program Sentinel showing quality degradation trend. Customer has noticed. Staffing gaps may be contributing factor.",
-      nextReviewDate: "2024-02-10"
-    },
-    {
-      id: "PRG-010",
-      name: "Program Horizon",
-      sector: "Communications",
-      programManager: "T. Anderson",
-      overallHealth: { status: "green", value: "On Track", threshold: "All metrics green/yellow", trend: "up", reason: "Improving trajectory" },
-      otd: { status: "green", value: "97.5%", threshold: ">=95%", trend: "up", reason: "OTD improving" },
-      costVariance: { status: "green", value: "-0.8%", threshold: "±1%", trend: "down", reason: "Cost savings realized" },
-      quality: { status: "green", value: "0.9 DPM", threshold: "<2 DPM", trend: "down", reason: "Quality excellent" },
-      safety: { status: "green", value: "0 incidents", threshold: "0 recordables", trend: "flat", reason: "Zero incidents" },
-      supplyStability: { status: "green", value: "Stable", threshold: "No critical disruptions", trend: "flat", reason: "Supply healthy" },
-      scheduleAdherence: { status: "green", value: "On Plan", threshold: "No slip", trend: "flat", reason: "On schedule" },
-      margin: { status: "green", value: "+2.8%", threshold: ">=0%", trend: "up", reason: "Margin expanding" },
-      customerHealth: { status: "green", value: "Excellent", threshold: "No escalations", trend: "up", reason: "Customer very satisfied" },
-      riskBurndown: { status: "green", value: "-15%", threshold: "Decreasing", trend: "down", reason: "Strong risk management" },
-      staffing: { status: "green", value: "99%", threshold: ">=95%", trend: "flat", reason: "Fully staffed" },
-      cash: { status: "green", value: "Ahead", threshold: "Within plan", trend: "up", reason: "Strong cash position" },
-      topIssues: ["None significant"],
-      topActions: ["Continuous improvement initiatives", "Knowledge transfer to other programs"],
-      executiveSummary: "Program Horizon is high performing. Strong candidate for best practice sharing.",
-      nextReviewDate: "2024-02-22"
+  const sectors = ["Defense Systems", "Avionics", "Space Systems", "Maritime", "Communications", "Cyber Systems", "Ground Systems", "Missile Systems"]
+  const managers = ["J. Martinez", "S. Chen", "R. Thompson", "A. Patel", "M. Williams", "K. Johnson", "L. Garcia", "D. Brown", "E. Wilson", "T. Anderson", "P. Kumar", "N. Roberts", "C. Davis", "H. Lee", "F. Moore", "B. Taylor", "G. White", "I. Harris", "O. Clark", "V. Lewis"]
+  
+  const generateMetric = (baseStatus: Status, variance: number = 0.3): MetricCell => {
+    const rand = Math.random()
+    let status: Status = baseStatus
+    if (rand < variance) status = baseStatus === "green" ? "yellow" : baseStatus === "yellow" ? (Math.random() > 0.5 ? "green" : "red") : "yellow"
+    
+    const trends: Trend[] = ["up", "down", "flat"]
+    const trend = trends[Math.floor(Math.random() * 3)]
+    
+    const values: Record<Status, Record<string, { value: string; threshold: string; reason: string }>> = {
+      green: {
+        otd: { value: `${95 + Math.floor(Math.random() * 5)}.${Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "OTD above target" },
+        costVariance: { value: `${Math.random() > 0.5 ? "+" : "-"}${(Math.random() * 0.9).toFixed(1)}%`, threshold: "±1%", reason: "Cost within range" },
+        quality: { value: `${(0.5 + Math.random() * 1.4).toFixed(1)} DPM`, threshold: "<2 DPM", reason: "Quality acceptable" },
+        safety: { value: "0 incidents", threshold: "0 recordables", reason: "No safety concerns" },
+        supplyStability: { value: "Stable", threshold: "No critical disruptions", reason: "Supply chain healthy" },
+        scheduleAdherence: { value: "On Plan", threshold: "No slip", reason: "Schedule maintained" },
+        margin: { value: `+${(1 + Math.random() * 3).toFixed(1)}%`, threshold: ">=0%", reason: "Margin healthy" },
+        customerHealth: { value: "Normal", threshold: "No escalations", reason: "Customer satisfied" },
+        riskBurndown: { value: `-${5 + Math.floor(Math.random() * 15)}%`, threshold: "Decreasing", reason: "Risks being retired" },
+        staffing: { value: `${95 + Math.floor(Math.random() * 5)}%`, threshold: ">=95%", reason: "Adequately staffed" },
+        cash: { value: "On Target", threshold: "Within plan", reason: "Cash flow normal" },
+        overallHealth: { value: "On Track", threshold: "All metrics green/yellow", reason: "Strong performance" }
+      },
+      yellow: {
+        otd: { value: `${88 + Math.floor(Math.random() * 7)}.${Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "OTD below target" },
+        costVariance: { value: `+${(1.1 + Math.random() * 2).toFixed(1)}%`, threshold: "±1%", reason: "Cost pressure" },
+        quality: { value: `${(2.1 + Math.random() * 1).toFixed(1)} DPM`, threshold: "<2 DPM", reason: "Quality concerns" },
+        safety: { value: "Near-miss", threshold: "0 recordables", reason: "Near-miss under review" },
+        supplyStability: { value: "At Risk", threshold: "No critical disruptions", reason: "Supply concern" },
+        scheduleAdherence: { value: "Minor Slip", threshold: "No slip", reason: "Schedule slipping" },
+        margin: { value: `-${(0.1 + Math.random() * 1.5).toFixed(1)}%`, threshold: ">=0%", reason: "Margin pressure" },
+        customerHealth: { value: "Concerned", threshold: "No escalations", reason: "Customer concerns" },
+        riskBurndown: { value: `+${Math.floor(Math.random() * 8)}%`, threshold: "Decreasing", reason: "Risks not reducing" },
+        staffing: { value: `${85 + Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "Staffing gaps" },
+        cash: { value: "Watch", threshold: "Within plan", reason: "Cash attention needed" },
+        overallHealth: { value: "Watch", threshold: "1-2 yellow metrics", reason: "Monitoring required" }
+      },
+      red: {
+        otd: { value: `${70 + Math.floor(Math.random() * 18)}.${Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "Critical OTD miss" },
+        costVariance: { value: `+${(3.5 + Math.random() * 3).toFixed(1)}%`, threshold: "±1%", reason: "Significant overrun" },
+        quality: { value: `${(3.5 + Math.random() * 2).toFixed(1)} DPM`, threshold: "<2 DPM", reason: "Quality crisis" },
+        safety: { value: "Recordable", threshold: "0 recordables", reason: "Safety incident occurred" },
+        supplyStability: { value: "Critical", threshold: "No critical disruptions", reason: "Supply crisis" },
+        scheduleAdherence: { value: "Major Slip", threshold: "No slip", reason: "Major schedule delay" },
+        margin: { value: `-${(2 + Math.random() * 3).toFixed(1)}%`, threshold: ">=0%", reason: "Margin erosion" },
+        customerHealth: { value: "Escalated", threshold: "No escalations", reason: "Customer escalation" },
+        riskBurndown: { value: `+${15 + Math.floor(Math.random() * 15)}%`, threshold: "Decreasing", reason: "Risk exposure critical" },
+        staffing: { value: `${75 + Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "Critical staffing gaps" },
+        cash: { value: "Off Plan", threshold: "Within plan", reason: "Cash crisis" },
+        overallHealth: { value: "At Risk", threshold: "Critical metric red", reason: "Intervention required" }
+      }
     }
-  ]
+    
+    return { status, trend, ...values[status].overallHealth }
+  }
+  
+  const generateProgram = (id: number, tier: Tier, name: string, healthProfile: "good" | "mixed" | "troubled"): Program => {
+    const baseStatus: Status = healthProfile === "good" ? "green" : healthProfile === "mixed" ? "yellow" : "red"
+    const sector = sectors[Math.floor(Math.random() * sectors.length)]
+    const manager = managers[Math.floor(Math.random() * managers.length)]
+    
+    // Revenue based on tier: Tier 1 = $80-200M, Tier 2 = $30-80M, Tier 3 = $5-30M
+    const revenueRanges: Record<Tier, [number, number]> = {
+      "1": [80, 200],
+      "2": [30, 80],
+      "3": [5, 30]
+    }
+    const [minRev, maxRev] = revenueRanges[tier]
+    const revenue = Math.round(minRev + Math.random() * (maxRev - minRev))
+    
+    const otdVals = { green: { value: `${95 + Math.floor(Math.random() * 5)}.${Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "OTD above target" }, yellow: { value: `${88 + Math.floor(Math.random() * 7)}.${Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "OTD below target" }, red: { value: `${70 + Math.floor(Math.random() * 18)}.${Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "Critical OTD miss" } }
+    const costVals = { green: { value: `${Math.random() > 0.5 ? "+" : "-"}${(Math.random() * 0.9).toFixed(1)}%`, threshold: "±1%", reason: "Cost within range" }, yellow: { value: `+${(1.1 + Math.random() * 2).toFixed(1)}%`, threshold: "±1%", reason: "Cost pressure" }, red: { value: `+${(3.5 + Math.random() * 3).toFixed(1)}%`, threshold: "±1%", reason: "Significant overrun" } }
+    const qualVals = { green: { value: `${(0.5 + Math.random() * 1.4).toFixed(1)} DPM`, threshold: "<2 DPM", reason: "Quality acceptable" }, yellow: { value: `${(2.1 + Math.random() * 1).toFixed(1)} DPM`, threshold: "<2 DPM", reason: "Quality concerns" }, red: { value: `${(3.5 + Math.random() * 2).toFixed(1)} DPM`, threshold: "<2 DPM", reason: "Quality crisis" } }
+    const safeVals = { green: { value: "0 incidents", threshold: "0 recordables", reason: "No safety concerns" }, yellow: { value: "Near-miss", threshold: "0 recordables", reason: "Near-miss under review" }, red: { value: "Recordable", threshold: "0 recordables", reason: "Safety incident occurred" } }
+    const suppVals = { green: { value: "Stable", threshold: "No critical disruptions", reason: "Supply chain healthy" }, yellow: { value: "At Risk", threshold: "No critical disruptions", reason: "Supply concern" }, red: { value: "Critical", threshold: "No critical disruptions", reason: "Supply crisis" } }
+    const schedVals = { green: { value: "On Plan", threshold: "No slip", reason: "Schedule maintained" }, yellow: { value: "Minor Slip", threshold: "No slip", reason: "Schedule slipping" }, red: { value: "Major Slip", threshold: "No slip", reason: "Major schedule delay" } }
+    const margVals = { green: { value: `+${(1 + Math.random() * 3).toFixed(1)}%`, threshold: ">=0%", reason: "Margin healthy" }, yellow: { value: `-${(0.1 + Math.random() * 1.5).toFixed(1)}%`, threshold: ">=0%", reason: "Margin pressure" }, red: { value: `-${(2 + Math.random() * 3).toFixed(1)}%`, threshold: ">=0%", reason: "Margin erosion" } }
+    const custVals = { green: { value: "Normal", threshold: "No escalations", reason: "Customer satisfied" }, yellow: { value: "Concerned", threshold: "No escalations", reason: "Customer concerns" }, red: { value: "Escalated", threshold: "No escalations", reason: "Customer escalation" } }
+    const riskVals = { green: { value: `-${5 + Math.floor(Math.random() * 15)}%`, threshold: "Decreasing", reason: "Risks being retired" }, yellow: { value: `+${Math.floor(Math.random() * 8)}%`, threshold: "Decreasing", reason: "Risks not reducing" }, red: { value: `+${15 + Math.floor(Math.random() * 15)}%`, threshold: "Decreasing", reason: "Risk exposure critical" } }
+    const staffVals = { green: { value: `${95 + Math.floor(Math.random() * 5)}%`, threshold: ">=95%", reason: "Adequately staffed" }, yellow: { value: `${85 + Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "Staffing gaps" }, red: { value: `${75 + Math.floor(Math.random() * 10)}%`, threshold: ">=95%", reason: "Critical staffing gaps" } }
+    const cashVals = { green: { value: "On Target", threshold: "Within plan", reason: "Cash flow normal" }, yellow: { value: "Watch", threshold: "Within plan", reason: "Cash attention needed" }, red: { value: "Off Plan", threshold: "Within plan", reason: "Cash crisis" } }
+    const healthVals = { green: { value: "On Track", threshold: "All metrics green/yellow", reason: "Strong performance" }, yellow: { value: "Watch", threshold: "1-2 yellow metrics", reason: "Monitoring required" }, red: { value: "At Risk", threshold: "Critical metric red", reason: "Intervention required" } }
+    
+    const trends: Trend[] = ["up", "down", "flat"]
+    const pickTrend = (): Trend => trends[Math.floor(Math.random() * 3)]
+    const pickStatus = (base: Status, greenProb: number, yellowProb: number): Status => {
+      const r = Math.random()
+      if (r < greenProb) return "green"
+      if (r < greenProb + yellowProb) return "yellow"
+      return "red"
+    }
+    
+    // Determine metric statuses based on health profile
+    const getStatus = (base: Status): Status => {
+      if (base === "green") return pickStatus(base, 0.85, 0.12)
+      if (base === "yellow") return pickStatus(base, 0.35, 0.50)
+      return pickStatus(base, 0.10, 0.30)
+    }
+    
+    const ohStatus = healthProfile === "good" ? "green" : healthProfile === "mixed" ? "yellow" : "red"
+    const otdStatus = getStatus(baseStatus)
+    const costStatus = getStatus(baseStatus)
+    const qualStatus = getStatus(baseStatus)
+    const safeStatus = healthProfile === "troubled" ? pickStatus("red", 0.6, 0.3) : pickStatus("green", 0.9, 0.1)
+    const suppStatus = getStatus(baseStatus)
+    const schedStatus = getStatus(baseStatus)
+    const margStatus = getStatus(baseStatus)
+    const custStatus = getStatus(baseStatus)
+    const riskStatus = getStatus(baseStatus)
+    const staffStatus = getStatus(baseStatus)
+    const cashStatus = getStatus(baseStatus)
+    
+    const issues = healthProfile === "good" 
+      ? ["Minor process improvement opportunities"] 
+      : healthProfile === "mixed"
+      ? ["Cost pressure from materials", "Schedule buffer consumed", "Single-source component risk"]
+      : ["Critical part shortage", "Customer escalation active", "Schedule slip significant", "Cost overrun accelerating", "Staff burnout risk"]
+    
+    const actions = healthProfile === "good"
+      ? ["Continuous improvement initiatives", "Best practice documentation"]
+      : healthProfile === "mixed"
+      ? ["Recovery plan in development", "Supplier negotiations", "Overtime management"]
+      : ["War room established", "Executive escalation", "Recovery plan v3", "Emergency hiring"]
+    
+    const summary = healthProfile === "good"
+      ? "Program performing well across all dimensions. No intervention required."
+      : healthProfile === "mixed"
+      ? "Program experiencing some pressure areas. Mitigation actions in place, monitoring closely."
+      : "Program requires executive intervention. Multiple critical issues converging."
+    
+    return {
+      id: `PRG-${String(id).padStart(3, "0")}`,
+      name,
+      sector,
+      tier,
+      revenue,
+      programManager: manager,
+      overallHealth: { status: ohStatus, ...healthVals[ohStatus], trend: pickTrend() },
+      otd: { status: otdStatus, ...otdVals[otdStatus], trend: pickTrend() },
+      costVariance: { status: costStatus, ...costVals[costStatus], trend: pickTrend() },
+      quality: { status: qualStatus, ...qualVals[qualStatus], trend: pickTrend() },
+      safety: { status: safeStatus, ...safeVals[safeStatus], trend: pickTrend() },
+      supplyStability: { status: suppStatus, ...suppVals[suppStatus], trend: pickTrend() },
+      scheduleAdherence: { status: schedStatus, ...schedVals[schedStatus], trend: pickTrend() },
+      margin: { status: margStatus, ...margVals[margStatus], trend: pickTrend() },
+      customerHealth: { status: custStatus, ...custVals[custStatus], trend: pickTrend() },
+      riskBurndown: { status: riskStatus, ...riskVals[riskStatus], trend: pickTrend() },
+      staffing: { status: staffStatus, ...staffVals[staffStatus], trend: pickTrend() },
+      cash: { status: cashStatus, ...cashVals[cashStatus], trend: pickTrend() },
+      topIssues: issues,
+      topActions: actions,
+      executiveSummary: summary,
+      nextReviewDate: `2024-02-${String(5 + Math.floor(Math.random() * 20)).padStart(2, "0")}`
+    }
+  }
+  
+  // Tier 1 programs (12 programs) - highest revenue $80-200M
+  const tier1Names = ["Alpha Prime", "Strategic Defense", "Global Strike", "Command Nexus", "Titan Shield", "Eagle Eye", "Thunder Force", "Iron Dome", "Neptune Guard", "Spectrum Dominance", "Patriot Next", "Guardian Elite"]
+  
+  // Tier 2 programs (18 programs) - medium revenue $30-80M
+  const tier2Names = ["Falcon Wing", "Orion Link", "Atlas Network", "Phoenix Rise", "Vanguard System", "Sentinel Watch", "Horizon Scan", "Triton Wave", "Mercury Swift", "Apollo Connect", "Artemis Track", "Zeus Power", "Athena Shield", "Poseidon Deep", "Ares Strike", "Hermes Fast", "Hera Command", "Helios Beam"]
+  
+  // Tier 3 programs (25 programs) - lower revenue $5-30M
+  const tier3Names = ["Delta Support", "Echo Comm", "Foxtrot Maint", "Golf Logistics", "Hotel Sustain", "India Test", "Juliet Repair", "Kilo Parts", "Lima Training", "Mike Field", "November Depot", "Oscar Calibrate", "Papa Upgrade", "Quebec Mod", "Romeo Inspect", "Sierra Retrofit", "Tango Refresh", "Uniform Service", "Victor Overhaul", "Whiskey Rebuild", "X-Ray Assess", "Yankee Audit", "Zulu Baseline", "Bravo Enhance", "Charlie Optimize"]
+  
+  const programs: Program[] = []
+  let idx = 1
+  
+  // Tier 1: 12 programs (mostly good, some mixed, rare troubled)
+  tier1Names.forEach((name, i) => {
+    const profile = i < 7 ? "good" : i < 10 ? "mixed" : "troubled"
+    programs.push(generateProgram(idx++, "1", name, profile))
+  })
+  
+  // Tier 2: 18 programs (mix of good, mixed, some troubled)
+  tier2Names.forEach((name, i) => {
+    const profile = i < 8 ? "good" : i < 14 ? "mixed" : "troubled"
+    programs.push(generateProgram(idx++, "2", name, profile))
+  })
+  
+  // Tier 3: 25 programs (more mixed and some troubled)
+  tier3Names.forEach((name, i) => {
+    const profile = i < 10 ? "good" : i < 20 ? "mixed" : "troubled"
+    programs.push(generateProgram(idx++, "3", name, profile))
+  })
+  
   return programs
 }
 
@@ -355,6 +326,7 @@ type MetricKey = typeof metricColumns[number]["key"]
 export function SectorView() {
   const [searchTerm, setSearchTerm] = useState("")
   const [sectorFilter, setSectorFilter] = useState<string>("all")
+  const [tierFilter, setTierFilter] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [pmFilter, setPmFilter] = useState<string>("all")
   const [showOnlyIssues, setShowOnlyIssues] = useState(false)
@@ -370,11 +342,22 @@ export function SectorView() {
   const sectors = useMemo(() => [...new Set(programs.map(p => p.sector))], [programs])
   const programManagers = useMemo(() => [...new Set(programs.map(p => p.programManager))], [programs])
 
+  // Tier stats for display
+  const tierStats = useMemo(() => ({
+    tier1: programs.filter(p => p.tier === "1").length,
+    tier2: programs.filter(p => p.tier === "2").length,
+    tier3: programs.filter(p => p.tier === "3").length,
+    tier1Revenue: programs.filter(p => p.tier === "1").reduce((sum, p) => sum + p.revenue, 0),
+    tier2Revenue: programs.filter(p => p.tier === "2").reduce((sum, p) => sum + p.revenue, 0),
+    tier3Revenue: programs.filter(p => p.tier === "3").reduce((sum, p) => sum + p.revenue, 0),
+  }), [programs])
+
   // Filter and sort programs
   const filteredPrograms = useMemo(() => {
     let result = programs.filter(p => {
       if (searchTerm && !p.name.toLowerCase().includes(searchTerm.toLowerCase())) return false
       if (sectorFilter !== "all" && p.sector !== sectorFilter) return false
+      if (tierFilter !== "all" && p.tier !== tierFilter) return false
       if (pmFilter !== "all" && p.programManager !== pmFilter) return false
       if (statusFilter !== "all" && p.overallHealth.status !== statusFilter) return false
       if (showOnlyIssues && p.overallHealth.status === "green") return false
@@ -389,7 +372,7 @@ export function SectorView() {
     }
 
     return result
-  }, [programs, searchTerm, sectorFilter, statusFilter, pmFilter, showOnlyIssues, sortWorstFirst])
+  }, [programs, searchTerm, sectorFilter, tierFilter, statusFilter, pmFilter, showOnlyIssues, sortWorstFirst])
 
   // Summary stats
   const stats = useMemo(() => {
@@ -455,11 +438,32 @@ export function SectorView() {
         </div>
 
         {/* Summary KPI Strip */}
-        <div className="grid grid-cols-6 gap-3">
+        <div className="grid grid-cols-9 gap-3">
           <Card className="border-slate-200">
             <CardContent className="p-3">
               <p className="text-xs text-slate-500">Total Programs</p>
               <p className="text-2xl font-bold text-slate-800">{stats.total}</p>
+            </CardContent>
+          </Card>
+          <Card className="border-indigo-200 bg-indigo-50/50">
+            <CardContent className="p-3">
+              <p className="text-xs text-indigo-600">Tier 1 (Strategic)</p>
+              <p className="text-2xl font-bold text-indigo-700">{tierStats.tier1}</p>
+              <p className="text-[10px] text-indigo-500">${tierStats.tier1Revenue}M rev</p>
+            </CardContent>
+          </Card>
+          <Card className="border-sky-200 bg-sky-50/50">
+            <CardContent className="p-3">
+              <p className="text-xs text-sky-600">Tier 2 (Core)</p>
+              <p className="text-2xl font-bold text-sky-700">{tierStats.tier2}</p>
+              <p className="text-[10px] text-sky-500">${tierStats.tier2Revenue}M rev</p>
+            </CardContent>
+          </Card>
+          <Card className="border-slate-200 bg-slate-50/50">
+            <CardContent className="p-3">
+              <p className="text-xs text-slate-500">Tier 3 (Support)</p>
+              <p className="text-2xl font-bold text-slate-700">{tierStats.tier3}</p>
+              <p className="text-[10px] text-slate-400">${tierStats.tier3Revenue}M rev</p>
             </CardContent>
           </Card>
           <Card className="border-emerald-200 bg-emerald-50/50">
@@ -539,6 +543,21 @@ export function SectorView() {
                 />
               </div>
               
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs h-6 bg-blue-50 border-blue-200 text-blue-700">Tier</Badge>
+                <Select value={tierFilter} onValueChange={setTierFilter}>
+                  <SelectTrigger className="w-44 h-8 text-sm">
+                    <SelectValue placeholder="Program Tier" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Tiers ({programs.length})</SelectItem>
+                    <SelectItem value="1">Tier 1 - Strategic ({tierStats.tier1}) ${tierStats.tier1Revenue}M</SelectItem>
+                    <SelectItem value="2">Tier 2 - Core ({tierStats.tier2}) ${tierStats.tier2Revenue}M</SelectItem>
+                    <SelectItem value="3">Tier 3 - Support ({tierStats.tier3}) ${tierStats.tier3Revenue}M</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="flex items-center gap-2">
                 <Building2 className="w-4 h-4 text-slate-400" />
                 <Select value={sectorFilter} onValueChange={setSectorFilter}>
@@ -634,8 +653,14 @@ export function SectorView() {
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 sticky top-0 z-10">
                   <tr className="border-b border-slate-200">
-                    <th className="sticky left-0 z-20 bg-slate-50 text-left p-3 font-semibold text-slate-700 min-w-[180px] border-r border-slate-200">
+                    <th className="sticky left-0 z-20 bg-slate-50 text-left p-3 font-semibold text-slate-700 min-w-[220px] border-r border-slate-200">
                       Program
+                    </th>
+                    <th className="p-2 text-center font-semibold text-slate-700 min-w-[50px] bg-blue-50">
+                      Tier
+                    </th>
+                    <th className="p-2 text-center font-semibold text-slate-700 min-w-[70px] bg-blue-50">
+                      Revenue
                     </th>
                     {metricColumns.map(col => (
                       <th key={col.key} className={`p-2 text-center font-semibold text-slate-700 min-w-[70px] ${col.critical ? "bg-slate-100" : "bg-slate-50"}`}>
@@ -663,6 +688,21 @@ export function SectorView() {
                           <div className="font-medium text-slate-800 hover:text-blue-600">{program.name}</div>
                           <div className="text-xs text-slate-500">{program.sector} • {program.programManager}</div>
                         </button>
+                      </td>
+                      <td className="p-1.5 text-center bg-blue-50/30">
+                        <Badge 
+                          variant="outline" 
+                          className={`text-[10px] px-1.5 py-0.5 ${
+                            program.tier === "1" ? "bg-indigo-100 border-indigo-300 text-indigo-700" :
+                            program.tier === "2" ? "bg-sky-100 border-sky-300 text-sky-700" :
+                            "bg-slate-100 border-slate-300 text-slate-600"
+                          }`}
+                        >
+                          T{program.tier}
+                        </Badge>
+                      </td>
+                      <td className="p-1.5 text-center bg-blue-50/30">
+                        <span className="text-xs font-medium text-slate-700">${program.revenue}M</span>
                       </td>
                       {metricColumns.map(col => {
                         const metric = getMetricValue(program, col.key)
