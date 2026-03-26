@@ -347,6 +347,8 @@ export function SectorView() {
   const [sortWorstFirst, setSortWorstFirst] = useState(false)
   const [selectedProgram, setSelectedProgram] = useState<Program | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedMetric, setSelectedMetric] = useState<{ program: Program; metricKey: string; metricLabel: string } | null>(null)
+  const [metricDrawerOpen, setMetricDrawerOpen] = useState(false)
 
   const programs = useMemo(() => generateMockPrograms(), [])
 
@@ -401,6 +403,12 @@ export function SectorView() {
   const handleRowClick = (program: Program) => {
     setSelectedProgram(program)
     setDrawerOpen(true)
+  }
+
+  const handleCellClick = (program: Program, metricKey: string, metricLabel: string, e: React.MouseEvent) => {
+    e.stopPropagation() // Prevent row click
+    setSelectedMetric({ program, metricKey, metricLabel })
+    setMetricDrawerOpen(true)
   }
 
   const getMetricValue = (program: Program, key: MetricKey): MetricCell => {
@@ -634,8 +642,13 @@ export function SectorView() {
                       onClick={() => handleRowClick(program)}
                     >
                       <td className="sticky left-0 z-10 bg-white hover:bg-slate-50 p-3 border-r border-slate-200">
-                        <div className="font-medium text-slate-800">{program.name}</div>
-                        <div className="text-xs text-slate-500">{program.sector} • {program.programManager}</div>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleRowClick(program); }}
+                          className="text-left hover:bg-blue-50 rounded p-1 -m-1 transition-colors"
+                        >
+                          <div className="font-medium text-slate-800 hover:text-blue-600">{program.name}</div>
+                          <div className="text-xs text-slate-500">{program.sector} • {program.programManager}</div>
+                        </button>
                       </td>
                       {metricColumns.map(col => {
                         const metric = getMetricValue(program, col.key)
@@ -643,15 +656,19 @@ export function SectorView() {
                           <td key={col.key} className="p-1.5 text-center">
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <div className={`inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded ${getStatusColor(metric.status)} text-white text-xs font-medium min-w-[50px]`}>
+                                <button
+                                  onClick={(e) => handleCellClick(program, col.key, col.label, e)}
+                                  className={`inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded ${getStatusColor(metric.status)} text-white text-xs font-medium min-w-[50px] cursor-pointer hover:opacity-80 hover:ring-2 hover:ring-offset-1 hover:ring-slate-400 transition-all`}
+                                >
                                   {getTrendIcon(metric.trend)}
-                                </div>
+                                </button>
                               </TooltipTrigger>
                               <TooltipContent side="top" className="max-w-[220px]">
                                 <div className="text-xs space-y-1">
                                   <p className="font-semibold">{col.label}: {metric.value}</p>
                                   <p className="text-slate-400">Threshold: {metric.threshold}</p>
                                   <p>{metric.reason}</p>
+                                  <p className="text-blue-400 pt-1">Click for details</p>
                                 </div>
                               </TooltipContent>
                             </Tooltip>
@@ -767,6 +784,154 @@ export function SectorView() {
                 </div>
               </>
             )}
+          </SheetContent>
+        </Sheet>
+
+        {/* Metric Detail Drawer - for individual cell clicks */}
+        <Sheet open={metricDrawerOpen} onOpenChange={setMetricDrawerOpen}>
+          <SheetContent className="w-[450px] sm:max-w-[450px] overflow-y-auto">
+            {selectedMetric && (() => {
+              const metric = getMetricValue(selectedMetric.program, selectedMetric.metricKey as MetricKey)
+              const program = selectedMetric.program
+              
+              // Generate mitigation actions based on metric status
+              const getMitigationActions = (): string[] => {
+                if (metric.status === "green") return ["Continue monitoring", "Document best practices"]
+                if (metric.status === "yellow") return ["Root cause investigation", "Corrective action plan development", "Increased monitoring frequency"]
+                return ["Executive escalation", "War room established", "Daily status meetings", "Recovery plan development", "Resource augmentation"]
+              }
+              
+              // Generate issue drivers based on metric
+              const getIssueDrivers = (): string[] => {
+                if (metric.status === "green") return ["No significant issues"]
+                if (selectedMetric.metricKey === "otd") return ["Supplier delivery delays", "Internal capacity constraints", "Quality rework cycles"]
+                if (selectedMetric.metricKey === "costVariance") return ["Material cost increases", "Labor inefficiency", "Expedite freight costs"]
+                if (selectedMetric.metricKey === "quality") return ["Process variation", "Supplier defects", "Training gaps"]
+                if (selectedMetric.metricKey === "supplyStability") return ["Supplier financial stress", "Single-source dependency", "Lead time extensions"]
+                return ["Multiple contributing factors", "Root cause analysis in progress"]
+              }
+              
+              // Get owner based on metric type
+              const getOwner = (): string => {
+                const owners: Record<string, string> = {
+                  otd: "Operations Director",
+                  costVariance: "Finance Controller",
+                  quality: "Quality Manager",
+                  safety: "EHS Director",
+                  supplyStability: "Supply Chain Director",
+                  scheduleAdherence: "Program Manager",
+                  margin: "Finance Controller",
+                  customerHealth: "Account Director",
+                  riskBurndown: "Risk Manager",
+                  staffing: "HR Business Partner",
+                  cash: "Finance Controller",
+                  overallHealth: "Program Manager"
+                }
+                return owners[selectedMetric.metricKey] || "Program Manager"
+              }
+              
+              return (
+                <>
+                  <SheetHeader className="pb-4 border-b border-slate-200">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-4 h-4 rounded ${getStatusColor(metric.status)}`} />
+                      <SheetTitle className="text-lg font-bold text-slate-800">{selectedMetric.metricLabel}</SheetTitle>
+                    </div>
+                    <p className="text-sm text-slate-500 mt-1">{program.name} - {program.sector}</p>
+                  </SheetHeader>
+
+                  <div className="mt-4 space-y-4">
+                    {/* Status Summary */}
+                    <div className={`p-4 rounded-lg border ${getStatusBgLight(metric.status)}`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs text-slate-500">Current Status</p>
+                          <p className={`text-xl font-bold ${getStatusText(metric.status)}`}>
+                            {metric.status === "green" ? "On Track" : metric.status === "yellow" ? "Watch" : "At Risk"}
+                          </p>
+                        </div>
+                        <div className={`p-3 rounded-full ${getStatusColor(metric.status)}`}>
+                          {metric.status === "green" && <CheckCircle className="w-6 h-6 text-white" />}
+                          {metric.status === "yellow" && <AlertTriangle className="w-6 h-6 text-white" />}
+                          {metric.status === "red" && <XCircle className="w-6 h-6 text-white" />}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Actual Value & Threshold */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 bg-slate-50 rounded-lg">
+                        <p className="text-xs text-slate-500">Actual Value</p>
+                        <p className="text-lg font-bold text-slate-800">{metric.value}</p>
+                      </div>
+                      <div className="p-3 bg-slate-50 rounded-lg">
+                        <p className="text-xs text-slate-500">Threshold / Target</p>
+                        <p className="text-lg font-bold text-slate-800">{metric.threshold}</p>
+                      </div>
+                    </div>
+
+                    {/* Trend */}
+                    <div className="p-3 bg-slate-50 rounded-lg">
+                      <p className="text-xs text-slate-500 mb-1">Trend Direction</p>
+                      <div className="flex items-center gap-2">
+                        {metric.trend === "up" && <TrendingUp className={`w-5 h-5 ${selectedMetric.metricKey === "costVariance" || selectedMetric.metricKey === "riskBurndown" ? "text-red-500" : "text-emerald-500"}`} />}
+                        {metric.trend === "down" && <TrendingDown className={`w-5 h-5 ${selectedMetric.metricKey === "costVariance" || selectedMetric.metricKey === "riskBurndown" ? "text-emerald-500" : "text-red-500"}`} />}
+                        {metric.trend === "flat" && <Minus className="w-5 h-5 text-slate-400" />}
+                        <span className="text-sm font-medium text-slate-700">
+                          {metric.trend === "up" ? "Increasing" : metric.trend === "down" ? "Decreasing" : "Stable"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Explanation */}
+                    <div className="p-3 bg-slate-50 rounded-lg">
+                      <p className="text-xs text-slate-500 mb-1">Explanation</p>
+                      <p className="text-sm text-slate-700">{metric.reason}</p>
+                    </div>
+
+                    {/* Issue Drivers */}
+                    {metric.status !== "green" && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-500 mb-2">Top Issue Drivers</p>
+                        <ul className="space-y-1">
+                          {getIssueDrivers().map((driver, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+                              <span className="text-red-400 mt-0.5">•</span>
+                              {driver}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Mitigation Actions */}
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 mb-2">Current Mitigation Actions</p>
+                      <ul className="space-y-1">
+                        {getMitigationActions().map((action, i) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+                            <span className="text-blue-400 mt-0.5">•</span>
+                            {action}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Owner */}
+                    <div className="p-3 bg-slate-50 rounded-lg">
+                      <p className="text-xs text-slate-500">Metric Owner</p>
+                      <p className="text-sm font-medium text-slate-800">{getOwner()}</p>
+                    </div>
+
+                    {/* Next Review */}
+                    <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                      <p className="text-xs text-blue-600">Next Review Date</p>
+                      <p className="text-sm font-medium text-blue-800">{program.nextReviewDate}</p>
+                    </div>
+                  </div>
+                </>
+              )
+            })()}
           </SheetContent>
         </Sheet>
       </div>
