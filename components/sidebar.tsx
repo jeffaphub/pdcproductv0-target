@@ -60,6 +60,7 @@ const sections: SidebarSection[] = [
       { id: "late-job-tracking", label: "Late Part Tracking" },
       { id: "shortage-critical-path", label: "Shortage & Critical Path Parts" },
       { id: "supplier-commitments", label: "Supplier Commitments Tracking" },
+      { id: "sector-view", label: "Sector View" },
     ],
   },
 ]

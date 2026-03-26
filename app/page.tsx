@@ -36,6 +36,7 @@ import { CBOMLifecycle } from "@/components/tabs/cbom-lifecycle"
 import { LateJobTracking } from "@/components/tabs/late-job-tracking"
 import { ShortageCriticalPath } from "@/components/tabs/shortage-critical-path"
 import { SupplierCommitmentsTracking } from "@/components/tabs/supplier-commitments-tracking"
+import { SectorView } from "@/components/tabs/sector-view"
 
 export type TabId =
   | "standard-cost"
@@ -71,6 +72,7 @@ export type TabId =
   | "late-job-tracking"
   | "shortage-critical-path"
   | "supplier-commitments"
+  | "sector-view"
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("standard-cost")
@@ -126,6 +128,7 @@ export default function Home() {
           {activeTab === "late-job-tracking" && <LateJobTracking />}
           {activeTab === "shortage-critical-path" && <ShortageCriticalPath />}
           {activeTab === "supplier-commitments" && <SupplierCommitmentsTracking />}
+          {activeTab === "sector-view" && <SectorView />}
         </main>
       </div>
     </div>
