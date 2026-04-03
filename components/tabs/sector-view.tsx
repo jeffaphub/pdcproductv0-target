@@ -438,59 +438,59 @@ export function SectorView() {
         </div>
 
         {/* Summary KPI Strip */}
-        <div className="grid grid-cols-9 gap-3">
-          <Card className="border-slate-200">
+        <div className="flex flex-wrap gap-3">
+          <Card className="border-slate-200 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-slate-500">Total Programs</p>
               <p className="text-2xl font-bold text-slate-800">{stats.total}</p>
             </CardContent>
           </Card>
-          <Card className="border-indigo-200 bg-indigo-50/50">
+          <Card className="border-indigo-200 bg-indigo-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-indigo-600">Tier 1 (Strategic)</p>
               <p className="text-2xl font-bold text-indigo-700">{tierStats.tier1}</p>
               <p className="text-[10px] text-indigo-500">${tierStats.tier1Revenue}M rev</p>
             </CardContent>
           </Card>
-          <Card className="border-sky-200 bg-sky-50/50">
+          <Card className="border-sky-200 bg-sky-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-sky-600">Tier 2 (Core)</p>
               <p className="text-2xl font-bold text-sky-700">{tierStats.tier2}</p>
               <p className="text-[10px] text-sky-500">${tierStats.tier2Revenue}M rev</p>
             </CardContent>
           </Card>
-          <Card className="border-slate-200 bg-slate-50/50">
+          <Card className="border-slate-200 bg-slate-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-slate-500">Tier 3 (Support)</p>
               <p className="text-2xl font-bold text-slate-700">{tierStats.tier3}</p>
               <p className="text-[10px] text-slate-400">${tierStats.tier3Revenue}M rev</p>
             </CardContent>
           </Card>
-          <Card className="border-emerald-200 bg-emerald-50/50">
+          <Card className="border-emerald-200 bg-emerald-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-emerald-600">Programs Green</p>
               <p className="text-2xl font-bold text-emerald-700">{stats.green}</p>
             </CardContent>
           </Card>
-          <Card className="border-amber-200 bg-amber-50/50">
+          <Card className="border-amber-200 bg-amber-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-amber-600">Programs Yellow</p>
               <p className="text-2xl font-bold text-amber-700">{stats.yellow}</p>
             </CardContent>
           </Card>
-          <Card className="border-red-200 bg-red-50/50">
+          <Card className="border-red-200 bg-red-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-red-600">Programs Red</p>
               <p className="text-2xl font-bold text-red-700">{stats.red}</p>
             </CardContent>
           </Card>
-          <Card className="border-slate-200">
+          <Card className="border-slate-200 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-slate-500">Worsening Trend</p>
               <p className="text-2xl font-bold text-slate-800">{stats.worsening}</p>
             </CardContent>
           </Card>
-          <Card className="border-red-200 bg-red-50/50">
+          <Card className="border-red-200 bg-red-50/50 flex-1 min-w-[100px]">
             <CardContent className="p-3">
               <p className="text-xs text-red-600">Needs Intervention</p>
               <p className="text-2xl font-bold text-red-700">{stats.needsIntervention}</p>
